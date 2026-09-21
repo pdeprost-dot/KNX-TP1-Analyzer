@@ -60,6 +60,8 @@ Le test de coexistence ADC + DMA + LCD + tactile + Wi-Fi + Web d'environ **10 mi
 
 Le test Events V1 sur le firmware final, sur **612 s**, a relevé une moyenne de **83 334 échantillons/s** sur 113 sondages, **0 overrun ADC**, **0 erreur DMA**, **0 échec de requête de test**, **0 redémarrage** et **0 erreur WebSocket**. La heap libre minimale relevée par les sondages était de **146 092 octets** ; le minimum interne de la carte a été **114 700 octets**, avec un plus grand bloc libre observé de **120 820 octets**. Aucun HTTP 4xx/5xx ni timeout pendant ces 612 s. Un test distinct de **26 captures manuelles** a validé la rotation des **24 métadonnées** et la conservation d’un seul RAW, avec **0 overrun ADC**.
 
+Validation visuelle finale sur la carte Waveshare : le Dashboard LCD affiche correctement **STOPPED**, **SCOPE READY**, **KNX NOT CONNECTED**, **EVENTS 26**, **ERRORS 0** et **ADC 83,3 kS/s** ; la navigation DASH / SCOPE / EVENT / SYS et le bouton START ANALYSIS sont visibles. Le compteur LCD Events V1 est ainsi **validé visuellement sur matériel réel**.
+
 **Prévu, non implémenté ou non validé :** front-end analogique KNX protégé, mesure réelle du bus, VBUS sur GPIO6, TP-UART, décodage des télégrammes, ACK / NAK / BUSY, corrélation protocole/physique, classification d'anomalies, stockage Events et Sessions sur SD, application PC, rapports et validation terrain complète.
 
 ### Events V1 et API locale
@@ -156,6 +158,8 @@ No analog KNX bus wiring diagram has been validated or published.
 An approximately **10-minute** ADC + DMA + LCD + touch + Wi-Fi + Web coexistence test measured near 83,333 samples/s, **zero ADC overruns**, **zero DMA read errors**, and no spontaneous reboot or watchdog. About 160,544 bytes of heap remained after stopping; the observed minimum under load was about 124,908 bytes. One isolated HTTP request timed out, after which the server continued to work.
 
 The final-firmware **612-second** Events V1 coexistence test averaged **83,334 samples/s** across 113 polls, with **0 ADC overruns**, **0 DMA read errors**, **0 test-request failures**, **0 reboots**, and **0 WebSocket errors**. The lowest free heap seen by polling was **146,092 bytes**; the board’s internal minimum was **114,700 bytes**, and the lowest observed largest free block was **120,820 bytes**. There were no HTTP 4xx/5xx responses or timeouts during these 612 seconds. A separate **26-manual-capture** test validated rotation of the **24 metadata records** and retention of one RAW capture, with **0 ADC overruns**.
+
+Final visual check on the Waveshare board: the LCD Dashboard correctly shows **STOPPED**, **SCOPE READY**, **KNX NOT CONNECTED**, **EVENTS 26**, **ERRORS 0**, and **ADC 83.3 kS/s**; the DASH / SCOPE / EVENT / SYS navigation and START ANALYSIS button are visible. The Events V1 LCD counter is therefore **visually validated on real hardware**.
 
 **Planned, not implemented or not validated:** protected KNX analog front-end, actual bus measurement, GPIO6 VBUS, TP-UART, telegram decoder, ACK / NAK / BUSY analysis, protocol/physical correlation, anomaly classification, SD Event and Session storage, PC application, reports and complete field validation.
 
