@@ -31,6 +31,15 @@ La fonction centrale envisagée est leur **corrélation** : chute de tension →
 
 Le prototype utilise la [Waveshare ESP32-C6-Touch-LCD-1.47](https://www.waveshare.com/esp32-c6-touch-lcd-1.47.htm) ([documentation officielle](https://docs.waveshare.com/ESP32-C6-Touch-LCD-1.47)) : ESP32-C6, 8 Mo de Flash, écran IPS tactile capacitif 1,47" de 172 × 320 pixels, Wi-Fi, BLE, emplacement microSD, gestion batterie et USB-C.
 
+| Ressource matérielle | Lien | Usage dans le projet |
+| --- | --- | --- |
+| Carte Waveshare ESP32-C6-Touch-LCD-1.47 | [Produit officiel](https://www.waveshare.com/ESP32-C6-Touch-LCD-1.47.htm) · [documentation](https://docs.waveshare.com/ESP32-C6-Touch-LCD-1.47) | Prototype actuel, validé |
+| Brochage et fichiers constructeur | [Ressources Waveshare](https://docs.waveshare.com/ESP32-C6-Touch-LCD-1.47/Resources-And-Documents) · [schéma PDF](https://files.waveshare.com/wiki/ESP32-C6-Touch-LCD-1.47/ESP32-C6-Touch-LCD-1.47-Schematic.pdf) | Vérification des GPIO, du tactile, du LCD et de la microSD |
+| Microcontrôleur ESP32-C6 | [Fiche technique Espressif](https://documentation.espressif.com/esp32-c6_datasheet_en.pdf) | Limites électriques, ADC et interfaces |
+| Siemens BTM 117/12 PCBA / TP-UART2 | [Module](https://www.opternus.com/en/siemens/development-tools/tp-uart2-board-btm2-pcb) · [fiche PCBA PDF](https://www.opternus.com/fileadmin/_migrated/content_uploads/PCBA_UP117-12_datasheet_v5_2012-05-30_01.pdf) · [documentation TP-UART Siemens](https://sid.siemens.com/v/u/A6V11933794) | Future voie protocolaire, non intégrée |
+
+La carte, un câble USB-C et un signal de test **isolé du KNX** suffisent au prototype actuel. Une microSD peut être détectée, mais n'est pas requise pour Events V1. Aucun composant de front-end analogique KNX n'est encore sélectionné : il n'existe donc pas de nomenclature de raccordement au bus à reproduire.
+
 Pour la future voie **protocolaire**, l'interface envisagée est un Siemens BTM / TP-UART, référence prévue **5WG1 117-8AA12 PCBA BTM**. La [documentation technique publique du module BTM 117/12 PCBA](https://www.opternus.com/fileadmin/_migrated/content_uploads/PCBA_UP117-12_datasheet_v5_2012-05-30_01.pdf) décrit notamment l'interface série. Cette interface n'est **pas encore intégrée**. La mesure **analogique** du bus utilisera un front-end distinct, protégé et adapté aux tensions KNX ; il n'est pas encore conçu ni validé.
 
 | Broche | Rôle du prototype | État |
@@ -111,6 +120,15 @@ The intended core function is to **correlate** these observations: voltage distu
 ### Hardware and interfaces
 
 The prototype uses the [Waveshare ESP32-C6-Touch-LCD-1.47](https://www.waveshare.com/esp32-c6-touch-lcd-1.47.htm) ([official documentation](https://docs.waveshare.com/ESP32-C6-Touch-LCD-1.47)): ESP32-C6, 8 MB Flash, 1.47" 172 × 320 IPS capacitive touch display, Wi-Fi, BLE, microSD slot, battery management and USB-C.
+
+| Hardware resource | Link | Project use |
+| --- | --- | --- |
+| Waveshare ESP32-C6-Touch-LCD-1.47 board | [Official product](https://www.waveshare.com/ESP32-C6-Touch-LCD-1.47.htm) · [documentation](https://docs.waveshare.com/ESP32-C6-Touch-LCD-1.47) | Current validated prototype |
+| Board pinout and manufacturer files | [Waveshare resources](https://docs.waveshare.com/ESP32-C6-Touch-LCD-1.47/Resources-And-Documents) · [schematic PDF](https://files.waveshare.com/wiki/ESP32-C6-Touch-LCD-1.47/ESP32-C6-Touch-LCD-1.47-Schematic.pdf) | Check GPIO, touch, LCD and microSD connections |
+| ESP32-C6 microcontroller | [Espressif datasheet](https://documentation.espressif.com/esp32-c6_datasheet_en.pdf) | Electrical limits, ADC and interfaces |
+| Siemens BTM 117/12 PCBA / TP-UART2 | [Module](https://www.opternus.com/en/siemens/development-tools/tp-uart2-board-btm2-pcb) · [PCBA data sheet](https://www.opternus.com/fileadmin/_migrated/content_uploads/PCBA_UP117-12_datasheet_v5_2012-05-30_01.pdf) · [Siemens TP-UART documentation](https://sid.siemens.com/v/u/A6V11933794) | Future protocol path, not integrated |
+
+The board, a USB-C cable and a test signal **isolated from KNX** are enough for the current prototype. A microSD card can be detected but is not required for Events V1. No KNX analog front-end components have been selected, so there is no bus-connection bill of materials to reproduce.
 
 The planned **protocol** interface is a Siemens BTM / TP-UART, intended reference **5WG1 117-8AA12 PCBA BTM**. A [public technical data sheet for the BTM 117/12 PCBA](https://www.opternus.com/fileadmin/_migrated/content_uploads/PCBA_UP117-12_datasheet_v5_2012-05-30_01.pdf) describes its serial interface. This interface is **not integrated yet**. Analog bus measurement will use a **different**, protected front-end rated for KNX bus voltages; it has not been designed or validated.
 
