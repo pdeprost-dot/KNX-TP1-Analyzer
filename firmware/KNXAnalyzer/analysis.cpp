@@ -1,5 +1,7 @@
 #include "analysis.h"
 #include "acquisition.h"
+#include "storage.h"
+#include "web_server.h"
 
 namespace analysis {
 namespace {
@@ -13,21 +15,23 @@ uint32_t overrunBaseline = 0;
 
 bool start() {
   if (current == State::Starting || current == State::Stopping) return false;
-  if (current == State::Running && scope::status().running) return true;
-  const bool newSession = current != State::Running;
+  if (current == State::Running) return scope::start();
   current = State::Starting;
-  if (newSession) {
-    const auto adc = scope::status();
-    sampleBaseline = adc.samples;
-    overrunBaseline = adc.overruns;
-    startedMs = millis();
-    stoppedElapsedMs = 0;
-    ++session;
-  }
-  if (!scope::start()) {
+  const auto adc = scope::status();
+  sampleBaseline = adc.samples;
+  overrunBaseline = adc.overruns;
+  startedMs = millis();
+  stoppedElapsedMs = 0;
+  if (!storage::startSession(webui::errorCount())) {
     current = State::Error;
     return false;
   }
+  if (!scope::start()) {
+    storage::stopSession(webui::errorCount());
+    current = State::Error;
+    return false;
+  }
+  ++session;
   current = State::Running;
   Serial.printf("{\"type\":\"ANALYSIS\",\"state\":\"RUNNING\",\"session\":%lu}\n", session);
   return true;
@@ -37,11 +41,12 @@ bool stop() {
   if (current == State::Stopped) return true;
   if (current == State::Starting || current == State::Stopping) return false;
   current = State::Stopping;
-  const bool okay = scope::stop();
+  const bool adcOkay = scope::stop();
+  const bool sdOkay = storage::stopSession(webui::errorCount());
   stoppedElapsedMs = millis() - startedMs;
-  current = okay ? State::Stopped : State::Error;
+  current = adcOkay && sdOkay ? State::Stopped : State::Error;
   Serial.printf("{\"type\":\"ANALYSIS\",\"state\":\"%s\",\"session\":%lu}\n", name(current), session);
-  return okay;
+  return adcOkay && sdOkay;
 }
 
 Status status() {

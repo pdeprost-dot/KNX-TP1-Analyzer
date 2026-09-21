@@ -50,6 +50,7 @@ bool manualTrigger();
 void clear();
 Status status();
 bool waveform(Waveform &out);
+bool copyCaptureSamples(uint32_t captureNumber, uint32_t offset, uint16_t *out, uint32_t count);
 void service();
 void printStats();
 void pollSerial();

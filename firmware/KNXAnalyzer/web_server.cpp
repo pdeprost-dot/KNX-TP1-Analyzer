@@ -3,6 +3,7 @@
 #include "analysis.h"
 #include "acquisition.h"
 #include "events.h"
+#include "storage.h"
 #include "wifi_manager.h"
 #include "hmi.h"
 
@@ -25,11 +26,12 @@ String encodeStatus() {
   const auto adc = scope::status();
   const auto wifi = network::status();
   JsonDocument doc;
-  doc["firmware"] = "0.4.0-events";
+  doc["firmware"] = "0.5.0-sessions";
   doc["uptime_ms"] = millis();
   doc["flash_bytes"] = ESP.getFlashChipSize();
   doc["analysis"]["state"] = analysis::name(a.state);
   doc["analysis"]["session"] = a.session;
+  doc["analysis"]["session_id"] = storage::currentSessionId()[0] ? storage::currentSessionId() : storage::lastSessionId();
   doc["analysis"]["session_elapsed_ms"] = a.sessionElapsedMs;
   doc["analysis"]["session_samples"] = a.sessionSamples;
   doc["adc"]["ready"] = adc.initialized;
@@ -54,7 +56,22 @@ String encodeStatus() {
   doc["wifi"]["ap_ssid"] = wifi.apSsid;
   doc["wifi"]["primary_configured"] = wifi.primaryConfigured;
   doc["wifi"]["backup_configured"] = wifi.backupConfigured;
-  doc["sd"]["ready"] = sdReady;
+  const auto sd = storage::status();
+  doc["sd"]["ready"] = sd.mounted;
+  doc["sd"]["detected"] = sd.detected;
+  doc["sd"]["mounted"] = sd.mounted;
+  doc["sd"]["type"] = sd.cardType;
+  doc["sd"]["card_bytes"] = sd.cardBytes;
+  doc["sd"]["total_bytes"] = sd.totalBytes;
+  doc["sd"]["free_bytes"] = sd.freeBytes;
+  doc["sd"]["write_errors"] = sd.writeErrors;
+  doc["sd"]["queue_depth"] = sd.queueDepth;
+  doc["sd"]["queue_high_water"] = sd.queueHighWater;
+  doc["sd"]["captures_persisted"] = sd.capturesPersisted;
+  doc["sd"]["captures_failed"] = sd.capturesFailed;
+  doc["sd"]["bytes_written"] = sd.bytesWritten;
+  doc["sd"]["current_session"] = sd.currentSession;
+  doc["sd"]["last_session"] = sd.lastSession;
   doc["knx"] = "NOT_CONNECTED";
   doc["vbus"] = "NOT_CONNECTED";
   doc["events"] = events::count();
@@ -97,22 +114,18 @@ void apiScopeStatus() {
   json(200, output);
 }
 
-void apiWaveform() {
-  scope::Waveform wave = {};
-  const bool available = scope::waveform(wave);
-  const auto adc = scope::status();
-  uint32_t captureHz = adc.measuredHz;
-  events::Event latestEvent;
-  if (adc.captured && events::newest(0, latestEvent) && latestEvent.captureNumber == adc.captureNumber)
-    captureHz = latestEvent.sampleRate;
+void sendWaveform(const scope::Waveform &wave, bool available, uint32_t sampleRate,
+                  const char *state, const char *source) {
   String output;
-  output.reserve(3500);
+  output.reserve(3600);
   output += "{\"state\":\"";
-  output += adc.captured ? "CAPTURED" : adc.running ? "ARMED" : "STOPPED";
+  output += state;
+  output += "\",\"raw_source\":\"";
+  output += source;
   output += "\",\"samples\":";
   output += available ? wave.samples : 0;
   output += ",\"sample_rate_hz\":";
-  output += captureHz;
+  output += sampleRate;
   output += ",\"pre_samples\":";
   output += available && wave.captured ? scope::kPreSamples : 0;
   output += ",\"post_samples\":";
@@ -135,6 +148,27 @@ void apiWaveform() {
   }
   output += "]}";
   json(200, output);
+}
+void apiWaveform() {
+  scope::Waveform wave = {};
+  const bool available = scope::waveform(wave);
+  const auto adc = scope::status();
+  uint32_t captureHz = adc.measuredHz;
+  events::Event latestEvent;
+  if (adc.captured && events::newest(0, latestEvent) && latestEvent.captureNumber == adc.captureNumber)
+    captureHz = latestEvent.sampleRate;
+  sendWaveform(wave, available, captureHz,
+               adc.captured ? "CAPTURED" : adc.running ? "ARMED" : "STOPPED",
+               adc.captured ? "RAM" : "LIVE");
+}
+void apiStoredWaveform(const String &sessionId, uint32_t eventId) {
+  if (scope::status().running) { json(409, "{\"error\":\"adc_busy_retry\"}"); return; }
+  scope::Waveform wave = {};
+  uint32_t sampleRate = 0;
+  if (!storage::readWaveform(sessionId, eventId, wave, sampleRate)) {
+    json(422, "{\"error\":\"stored_capture_invalid\"}"); return;
+  }
+  sendWaveform(wave, true, sampleRate, "CAPTURED", "SD");
 }
 
 void apiWifiStatus() {
@@ -171,6 +205,7 @@ void apiWifiNetworks() {
 
 void eventJson(JsonObject node, const events::Event &event) {
   node["event_id"] = event.eventId;
+  node["session_id"] = event.sessionId;
   node["uptime_ms"] = event.uptimeMs;
   node["trigger"] = events::triggerName(event.triggerType);
   node["sample_rate_hz"] = event.sampleRate;
@@ -183,6 +218,8 @@ void eventJson(JsonObject node, const events::Event &event) {
   node["adc_mean_before"] = event.adcMeanBefore;
   node["adc_mean_after"] = event.adcMeanAfter;
   node["capture_state"] = events::captureStateName(event.captureState);
+  node["raw_source"] = events::rawAvailable(event) ? "RAM" :
+    event.rawPersisted ? "SD" : "unavailable";
 }
 
 void apiEventsList() {
@@ -215,10 +252,12 @@ bool apiEventRoute() {
   events::Event event;
   if (id == 0 || !events::find(id, event)) {
     json(404, "{\"error\":\"event_not_found\"}");
-  } else if (capture && !events::rawAvailable(event)) {
-    json(410, "{\"error\":\"raw_capture_not_retained\",\"event_id\":" + String(id) + "}");
-  } else if (capture) {
+  } else if (capture && events::rawAvailable(event)) {
     apiWaveform();
+  } else if (capture && event.rawPersisted) {
+    apiStoredWaveform(event.sessionId, id);
+  } else if (capture) {
+    json(410, "{\"error\":\"raw_capture_not_retained\",\"event_id\":" + String(id) + "}");
   } else {
     JsonDocument doc;
     eventJson(doc.to<JsonObject>(), event);
@@ -228,14 +267,91 @@ bool apiEventRoute() {
   }
   return true;
 }
+const char *sessionRawSource(const String &id, uint32_t eventId) {
+  events::Event current;
+  if (events::find(eventId, current) && strcmp(current.sessionId, id.c_str()) == 0 && events::rawAvailable(current))
+    return "RAM";
+  return storage::hasCapture(id, eventId) ? "SD" : "unavailable";
+}
+void apiSessionsList() {
+  if (scope::status().running) { json(409, "{\"error\":\"adc_busy_retry\"}"); return; }
+  JsonDocument doc;
+  if (!storage::listSessions(doc)) { json(503, "{\"error\":\"sd_unavailable\"}"); return; }
+  String output;
+  serializeJson(doc, output);
+  json(200, output);
+}
+bool parseEventId(const String &value, uint32_t &id) {
+  if (value.isEmpty() || value.length() > 10) return false;
+  for (size_t i = 0; i < value.length(); ++i) if (!isDigit(value[i])) return false;
+  id = static_cast<uint32_t>(strtoul(value.c_str(), nullptr, 10));
+  return id != 0;
+}
+bool apiSessionRoute() {
+  const String uri = server.uri();
+  constexpr char prefix[] = "/api/sessions/";
+  if (!uri.startsWith(prefix)) return false;
+  if (scope::status().running) { json(409, "{\"error\":\"adc_busy_retry\"}"); return true; }
+  String rest = uri.substring(sizeof(prefix) - 1);
+  const int slash = rest.indexOf('/');
+  const String id = slash < 0 ? rest : rest.substring(0, slash);
+  if (!storage::validSessionId(id)) { json(404, "{\"error\":\"session_not_found\"}"); return true; }
+  const String tail = slash < 0 ? "" : rest.substring(slash);
+  JsonDocument doc;
+  if (tail.isEmpty()) {
+    if (!storage::readSession(id, doc)) { json(404, "{\"error\":\"session_not_found\"}"); return true; }
+  } else if (tail == "/events") {
+    if (!storage::listEvents(id, doc)) { json(404, "{\"error\":\"session_not_found\"}"); return true; }
+    doc["session_id"] = id;
+    for (JsonObject item : doc["events"].as<JsonArray>())
+      item["raw_source"] = sessionRawSource(id, item["event_id"].as<uint32_t>());
+  } else if (tail.startsWith("/events/")) {
+    String eventPart = tail.substring(8);
+    const bool capture = eventPart.endsWith("/capture");
+    const bool raw = eventPart.endsWith("/raw");
+    if (capture) eventPart.remove(eventPart.length() - 8);
+    if (raw) eventPart.remove(eventPart.length() - 4);
+    uint32_t eventId = 0;
+    if (!parseEventId(eventPart, eventId) || !storage::readEvent(id, eventId, doc)) {
+      json(404, "{\"error\":\"event_not_found\"}"); return true;
+    }
+    if (capture) {
+      events::Event current;
+      if (events::find(eventId, current) && strcmp(current.sessionId, id.c_str()) == 0 && events::rawAvailable(current))
+        apiWaveform();
+      else if (storage::hasCapture(id, eventId)) apiStoredWaveform(id, eventId);
+      else json(410, "{\"error\":\"raw_capture_unavailable\"}");
+      return true;
+    }
+    if (raw) {
+      File file = storage::openRaw(id, eventId);
+      if (!file) { json(410, "{\"error\":\"raw_capture_unavailable\"}"); return true; }
+      server.sendHeader("Cache-Control", "no-store");
+      server.streamFile(file, "application/octet-stream");
+      file.close();
+      return true;
+    }
+    doc["raw_source"] = sessionRawSource(id, eventId);
+  } else {
+    json(404, "{\"error\":\"not_found\"}"); return true;
+  }
+  String output;
+  serializeJson(doc, output);
+  json(200, output);
+  return true;
+}
+
 }
 
 void setSdReady(bool ready) { sdReady = ready; }
+unsigned long errorCount() { return httpErrors; }
 
 void begin() {
   server.on("/", HTTP_GET, [] { server.send_P(200, "text/html", kWebPage); });
+  server.on("/sessions", HTTP_GET, [] { server.send_P(200, "text/html", kWebPage); });
   server.on("/api/status", HTTP_GET, [] { json(200, encodeStatus()); });
   server.on("/api/analysis/start", HTTP_POST, [] {
+    if (storage::busy()) { json(409, "{\"error\":\"sd_capture_pending\"}"); return; }
     const bool okay = analysis::start();
     hmi::refresh();
     json(okay ? 200 : 500, okay ? "{\"state\":\"RUNNING\"}" : "{\"error\":\"start_failed\"}");
@@ -247,6 +363,7 @@ void begin() {
   });
   server.on("/api/scope/status", HTTP_GET, apiScopeStatus);
   server.on("/api/events", HTTP_GET, apiEventsList);
+  server.on("/api/sessions", HTTP_GET, apiSessionsList);
   server.on("/api/scope/capture", HTTP_GET, apiWaveform);
   server.on("/api/scope/arm", HTTP_POST, [] {
     if (analysis::status().state != analysis::State::Running) {
@@ -256,6 +373,7 @@ void begin() {
     String selected = body["mode"] | "manual";
     scope::TriggerMode trigger = selected == "rising" ? scope::TriggerMode::Rising
       : selected == "falling" ? scope::TriggerMode::Falling : scope::TriggerMode::Manual;
+    if (storage::busy()) { json(409, "{\"error\":\"sd_capture_pending\"}"); return; }
     const bool okay = scope::arm(trigger) && scope::start();
     hmi::refresh();
     json(okay ? 200 : 500, okay ? "{\"state\":\"ARMED\"}" : "{\"error\":\"arm_failed\"}");
@@ -279,6 +397,7 @@ void begin() {
   });
   server.onNotFound([] {
     if (server.method() == HTTP_GET && apiEventRoute()) return;
+    if (server.method() == HTTP_GET && apiSessionRoute()) return;
     if (server.uri().startsWith("/api/")) json(404, "{\"error\":\"not_found\"}");
     else if (network::status().mode == network::Mode::AccessPoint) {
       server.sendHeader("Location", "http://192.168.4.1/"); server.send(302, "text/plain", "");

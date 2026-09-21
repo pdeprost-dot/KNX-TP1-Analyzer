@@ -2,6 +2,7 @@
 #include "analysis.h"
 #include "acquisition.h"
 #include "events.h"
+#include "storage.h"
 #include "wifi_manager.h"
 
 #include <Arduino_GFX_Library.h>
@@ -60,11 +61,16 @@ void dashboard() {
     button(6, 280, 160, a.state == analysis::State::Running ? "STOP ANALYSIS" : "START ANALYSIS", a.state == analysis::State::Running ? red : green);
     return;
   }
-  text(6, 34, analysis::name(a.state), a.state == analysis::State::Running ? green : amber, 2);
+  const auto sd = storage::status();
+  text(6, 34, a.state == analysis::State::Running ? "ANALYZING" : analysis::name(a.state),
+       a.state == analysis::State::Running ? green : amber, 2);
   text(6, 65, String("SCOPE ") + (adc.initialized ? "READY" : "ERROR"));
-  text(6, 82, "BUS   --.- V");
+  String sessionId = a.state == analysis::State::Running ? sd.currentSession : sd.lastSession;
+  if (sessionId.length() > 7) sessionId = sessionId.substring(sessionId.length() - 7);
+  text(6, 82, String("SESSION ") + (sessionId.length() ? sessionId : "--"));
   text(6, 99, "KNX   NOT CONNECTED");
-  text(6, 124, String("EVENTS ") + String(events::count()) + "   ERRORS " + String(adc.readErrors + adc.overruns));
+  const uint32_t visibleEvents = a.state == analysis::State::Running ? sd.currentEventCount : sd.lastEventCount;
+  text(6, 124, String("EVENTS ") + String(visibleEvents) + "   ERRORS " + String(adc.readErrors + adc.overruns + sd.writeErrors));
   text(6, 141, String("ADC ") + String(adc.measuredHz / 1000.0f, 1) + " kS/s");
   text(6, 163, String("WIFI ") + network::modeName(wifi.mode));
   text(6, 180, wifi.ssid.substring(0, 25));

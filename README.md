@@ -21,10 +21,10 @@ La fonction centrale envisagée est leur **corrélation** : chute de tension →
 
 - **Protocole :** décodage des télégrammes KNX TP1, adresses source et destination, données, ACK / NAK / BUSY, répétitions, erreurs et statistiques de trafic.
 - **Couche physique :** mesure indépendante de la tension KNX, min/max, chutes et perturbations, forme d'onde, oscilloscope et déclenchement sur anomalie. Un **front-end analogique séparé et protégé** reste à concevoir.
-- **Événements :** conserver en RAM les échantillons avant et après un trigger, créer un Event, puis lui associer ultérieurement le contexte KNX et une sauvegarde sélective sur microSD.
+- **Événements :** conserver les échantillons autour du trigger en RAM et sauvegarder chaque capture sur microSD ; le contexte KNX reste futur.
 - **HMI :** écran couleur tactile, Start/Stop Analysis, Dashboard, Scope, compteur d'événements, état système et diagnostics.
 - **Web local :** Dashboard, Scope, Events, Sessions, Configuration et System accessibles depuis PC, tablette ou smartphone, sans cloud obligatoire.
-- **Black box microSD :** sauvegarde future d'événements, sessions et captures sélectionnés. Le flux ADC brut complet ne doit pas être écrit en permanence.
+- **Black box microSD :** les sessions et leurs captures Events sont sauvegardées sur la carte. Le flux ADC brut complet n'est pas écrit en permanence.
 - **Application PC et rapports :** import futur d'une session et rapport HTML/PDF avec chronologie, statistiques, anomalies, télégrammes, tensions et captures associées.
 
 ### Matériel et interfaces
@@ -38,7 +38,7 @@ Le prototype utilise la [Waveshare ESP32-C6-Touch-LCD-1.47](https://www.waveshar
 | Microcontrôleur ESP32-C6 | [Fiche technique Espressif](https://documentation.espressif.com/esp32-c6_datasheet_en.pdf) | Limites électriques, ADC et interfaces |
 | Siemens BTM 117/12 PCBA / TP-UART2 | [Module](https://www.opternus.com/en/siemens/development-tools/tp-uart2-board-btm2-pcb) · [fiche PCBA PDF](https://www.opternus.com/fileadmin/_migrated/content_uploads/PCBA_UP117-12_datasheet_v5_2012-05-30_01.pdf) · [documentation TP-UART Siemens](https://sid.siemens.com/v/u/A6V11933794) | Future voie protocolaire, non intégrée |
 
-La carte, un câble USB-C et un signal de test **isolé du KNX** suffisent au prototype actuel. Une microSD peut être détectée, mais n'est pas requise pour Events V1. Aucun composant de front-end analogique KNX n'est encore sélectionné : il n'existe donc pas de nomenclature de raccordement au bus à reproduire.
+La carte, un câble USB-C, une microSD et un signal de test **isolé du KNX** suffisent au prototype Sessions V1. La SD est requise pour démarrer une session. Aucun front-end analogique KNX n'est encore sélectionné.
 
 Pour la future voie **protocolaire**, l'interface envisagée est un Siemens BTM / TP-UART, référence prévue **5WG1 117-8AA12 PCBA BTM**. La [documentation technique publique du module BTM 117/12 PCBA](https://www.opternus.com/fileadmin/_migrated/content_uploads/PCBA_UP117-12_datasheet_v5_2012-05-30_01.pdf) décrit notamment l'interface série. Cette interface n'est **pas encore intégrée**. La mesure **analogique** du bus utilisera un front-end distinct, protégé et adapté aux tensions KNX ; il n'est pas encore conçu ni validé.
 
@@ -54,19 +54,17 @@ Aucun schéma de raccordement analogique au bus KNX n'est validé ou publié.
 
 ### État actuel
 
-**Implémenté et validé sur carte réelle :** support Waveshare ESP32-C6, USB/Serial, LCD, tactile capacitif, QMI8658A, provisioning Wi-Fi AP, connexion STA, serveur Web local, Dashboard responsive, Web Scope, API REST et Start/Stop depuis Web et LCD. Sur GPIO5 isolé du bus KNX : ADC continu ESP-IDF + DMA à environ **83,33 kéchantillons/s**, ring buffer de **50 000 échantillons (100 Ko)**, **35 000 avant trigger / 15 000 après** (70 % / 30 %), triggers montant, descendant et manuel, Scope LCD et Web. Les fronts GND/3V3 ont été testés physiquement (brut 0 à 3438 ; moyenne montant environ 27 → 3256, descendant environ 3256 → 396). La microSD a été détectée, sans écriture Events. **Events V1** conserve en RAM jusqu’à 24 métadonnées de captures : identifiant, temps depuis le démarrage, trigger, fréquence, index 70/30, min/max et moyennes ADC. Le Dashboard LCD affiche le compteur ; la page Web Events permet de consulter la liste et le détail. Une seule capture RAW reste disponible : après réarmement ou capture suivante, les anciennes métadonnées restent consultables mais leur RAW est indiqué comme non conservé.
+**Validé sur carte réelle :** Waveshare ESP32-C6, USB/Serial, LCD, tactile, QMI8658A, Wi-Fi AP/STA, Web local, Dashboard, Scope, Events et Start/Stop. Sur GPIO5 isolé du bus KNX : ADC continu ESP-IDF + DMA à environ **83,33 kéchantillons/s**, ring de **50 000 échantillons / 100 Ko**, 70 % avant et 30 % après trigger, triggers montant, descendant et manuel. Les fronts GND/3V3 ont été testés physiquement. Le Dashboard LCD et son compteur Events ont été validés visuellement.
 
-Le test de coexistence ADC + DMA + LCD + tactile + Wi-Fi + Web d'environ **10 minutes** a mesuré près de 83 333 échantillons/s, **zéro overrun ADC**, **zéro erreur de lecture DMA**, aucun redémarrage spontané ni watchdog. Environ 160 544 octets de heap étaient libres après arrêt ; le minimum observé sous charge était d'environ 124 908 octets. Une requête HTTP a expiré isolément ; le serveur a continué à fonctionner.
+**Sessions + SD V1 :** START crée une session persistante et STOP la clôture. Le ring RAM conserve 24 métadonnées et une seule capture RAW complète ; la SD conserve l'historique des Events et de leurs RAW. Une session interrompue par reboot est marquée `INTERRUPTED` et ses captures finalisées restent lisibles. Une session de 50 captures manuelles a produit **50/50 fichiers RAW valides**, y compris la première capture sortie du ring RAM ; les 50 CRC et en-têtes ont été vérifiés. Une session fermée et une session interrompue sont restées accessibles après reboot.
 
-Le test Events V1 sur le firmware final, sur **612 s**, a relevé une moyenne de **83 334 échantillons/s** sur 113 sondages, **0 overrun ADC**, **0 erreur DMA**, **0 échec de requête de test**, **0 redémarrage** et **0 erreur WebSocket**. La heap libre minimale relevée par les sondages était de **146 092 octets** ; le minimum interne de la carte a été **114 700 octets**, avec un plus grand bloc libre observé de **120 820 octets**. Aucun HTTP 4xx/5xx ni timeout pendant ces 612 s. Un test distinct de **26 captures manuelles** a validé la rotation des **24 métadonnées** et la conservation d’un seul RAW, avec **0 overrun ADC**.
+Le firmware corrigé a tenu **630 s** avec **28 captures manuelles persistées** : fréquence moyenne des captures **83 286 échantillons/s** (min/max **82 732 / 83 325**), **0 overrun ADC**, **0 erreur DMA**, **0 erreur SD**, **0 échec HTTP**, **0 redémarrage** et **0 capture perdue**. Les 28 RAW ont également passé les contrôles d'en-tête et de CRC. La heap finale était de **118 392 octets** ; minimum interne **83 204 octets**, plus petit grand bloc libre observé **90 100 octets**. Le firmware a écrit **2 822 502 octets** sur SD pendant ce test. Une connexion WebSocket a été rétablie après une erreur transitoire. Le volume monté de la carte de 16 Go ne représente qu'environ **126 Mio** ; aucune modification de partition ni formatage n'a été effectué.
 
-Validation visuelle finale sur la carte Waveshare : le Dashboard LCD affiche correctement **STOPPED**, **SCOPE READY**, **KNX NOT CONNECTED**, **EVENTS 26**, **ERRORS 0** et **ADC 83,3 kS/s** ; la navigation DASH / SCOPE / EVENT / SYS et le bouton START ANALYSIS sont visibles. Le compteur LCD Events V1 est ainsi **validé visuellement sur matériel réel**.
+**Limites :** GPIO5 flottant ne produit que du bruit de test, jamais une mesure KNX. Aucun front-end analogique KNX protégé, mesure VBUS, TP-UART, décodage ou corrélation KNX n'est implémenté. L'application PC et les rapports restent futurs.
 
-**Prévu, non implémenté ou non validé :** front-end analogique KNX protégé, mesure réelle du bus, VBUS sur GPIO6, TP-UART, décodage des télégrammes, ACK / NAK / BUSY, corrélation protocole/physique, classification d'anomalies, stockage Events et Sessions sur SD, application PC, rapports et validation terrain complète.
+### Events et API locale
 
-### Events V1 et API locale
-
-Une capture manuelle, montante ou descendante crée un Event lorsque ses 50 000 échantillons sont complets. La liste est circulaire et limitée à 24 métadonnées en RAM ; elle est remise à zéro au redémarrage. `GET /api/events` renvoie la liste, `GET /api/events/{id}` le détail et `GET /api/events/{id}/capture` la capture décimée tant qu'elle est conservée. Une ancienne capture RAW renvoie HTTP 410 ; un identifiant inconnu renvoie HTTP 404. La page Web **Events** permet la même consultation. Les Events V1 ne contiennent aucun télégramme KNX et ne sont pas enregistrés sur microSD.
+Les routes Events existantes restent disponibles : `GET /api/events`, `GET /api/events/{id}` et `GET /api/events/{id}/capture`. Un Event encore présent dans le ring RAM peut charger son ancien RAW depuis la SD. La page `/sessions` et l'API Sessions ouvrent tout l'historique persistant. HTTP 410 indique un RAW indisponible et HTTP 404 un identifiant inconnu. Consultez le [format des captures, les routes Sessions et la reprise après reboot](docs/sessions-sd-v1.md).
 
 ### Architecture
 
@@ -84,7 +82,9 @@ flowchart LR
   Bus -. futur .-> UART["TP-UART<br/>PRÉVU / PLANNED"]
   UART -. futur .-> Decoder["KNX decoder<br/>PRÉVU / PLANNED"]
   Decoder -. futur .-> Correlation
-  Event -. futur .-> SD["Selective microSD storage<br/>PRÉVU / PLANNED"]
+  Event --> Writer["File d'un job / one job queue"]
+  Writer --> SD["Sessions + RAW microSD<br/>VALIDÉS / VALIDATED"]
+  SD --> Web["Web Sessions + API"]
   Event -. futur .-> Reports["PC HTML/PDF reports<br/>PRÉVUS / PLANNED"]
 ~~~
 
@@ -98,7 +98,7 @@ arduino-cli upload -p COM10 --fqbn 'esp32:esp32:esp32c6:CDCOnBoot=cdc,FlashSize=
 arduino-cli monitor -p COM10 -c baudrate=115200
 ~~~
 
-Au premier démarrage, l'AP KNX-Analyzer-XXXX propose la configuration locale à http://192.168.4.1/. Deux profils Wi-Fi (principal et secours) sont enregistrés en NVS ; le retour AP est prévu si aucun ne se connecte. Aucun mot de passe n'est publié dans ce dépôt. La SD existante n'est ni formatée ni utilisée pour enregistrer des captures.
+Au premier démarrage, l'AP KNX-Analyzer-XXXX propose la configuration locale à http://192.168.4.1/. Deux profils Wi-Fi (principal et secours) sont enregistrés en NVS ; le retour AP est prévu si aucun ne se connecte. Aucun mot de passe n'est publié. La SD n'est jamais formatée ; le projet écrit uniquement sous `/knx-analyzer/`.
 
 ### Méthode et licence
 
@@ -120,10 +120,10 @@ The intended core function is to **correlate** these observations: voltage distu
 
 - **Protocol:** decode KNX TP1 telegrams, source and destination addresses, data, ACK / NAK / BUSY, repetitions, errors and traffic statistics.
 - **Physical layer:** independently measure KNX bus voltage, min/max, drops, disturbances and waveform, with an oscilloscope and anomaly triggers. A **separate protected analog front-end** must still be designed.
-- **Events:** retain samples before and after a trigger in RAM, create an Event, and later attach KNX context and selective microSD storage.
+- **Events:** retain samples around the trigger in RAM and store each capture on microSD; KNX context is planned.
 - **HMI:** color touch screen, Start/Stop Analysis, Dashboard, Scope, event counter, system state and diagnostics.
 - **Local Web UI:** Dashboard, Scope, Events, Sessions, Configuration and System on a PC, tablet or phone, with no mandatory cloud service.
-- **microSD black box:** future selective storage of important events, diagnostic sessions and captures. The complete raw ADC stream should not be written continuously.
+- **microSD black box:** sessions and Event captures are stored on the card. The complete continuous ADC stream is not written.
 - **PC application and reports:** future session import and HTML/PDF diagnostic reports with timeline, statistics, anomalies, telegrams, voltages and associated scope captures.
 
 ### Hardware and interfaces
@@ -137,7 +137,7 @@ The prototype uses the [Waveshare ESP32-C6-Touch-LCD-1.47](https://www.waveshare
 | ESP32-C6 microcontroller | [Espressif datasheet](https://documentation.espressif.com/esp32-c6_datasheet_en.pdf) | Electrical limits, ADC and interfaces |
 | Siemens BTM 117/12 PCBA / TP-UART2 | [Module](https://www.opternus.com/en/siemens/development-tools/tp-uart2-board-btm2-pcb) · [PCBA data sheet](https://www.opternus.com/fileadmin/_migrated/content_uploads/PCBA_UP117-12_datasheet_v5_2012-05-30_01.pdf) · [Siemens TP-UART documentation](https://sid.siemens.com/v/u/A6V11933794) | Future protocol path, not integrated |
 
-The board, a USB-C cable and a test signal **isolated from KNX** are enough for the current prototype. A microSD card can be detected but is not required for Events V1. No KNX analog front-end components have been selected, so there is no bus-connection bill of materials to reproduce.
+The board, a USB-C cable, a microSD card and a test signal **isolated from KNX** are enough for Sessions V1. SD is required to start a session. No KNX analog front-end has been selected.
 
 The planned **protocol** interface is a Siemens BTM / TP-UART, intended reference **5WG1 117-8AA12 PCBA BTM**. A [public technical data sheet for the BTM 117/12 PCBA](https://www.opternus.com/fileadmin/_migrated/content_uploads/PCBA_UP117-12_datasheet_v5_2012-05-30_01.pdf) describes its serial interface. This interface is **not integrated yet**. Analog bus measurement will use a **different**, protected front-end rated for KNX bus voltages; it has not been designed or validated.
 
@@ -153,19 +153,17 @@ No analog KNX bus wiring diagram has been validated or published.
 
 ### Current status
 
-**Implemented and validated on real hardware:** Waveshare ESP32-C6 support, USB/Serial, LCD, capacitive touch, QMI8658A, Wi-Fi AP provisioning, STA connection, local Web server, responsive Dashboard, Web Scope, REST API and Start/Stop from Web and LCD. On GPIO5 isolated from the KNX bus: ESP-IDF continuous ADC + DMA at approximately **83.33 kSamples/s**, a **50,000-sample (100 KB)** ring, **35,000 pre-trigger / 15,000 post-trigger** samples (70% / 30%), rising, falling and manual triggers, and LCD/Web Scope. Physical GND/3V3 edges were tested (raw 0 to 3438; rising mean about 27 → 3256, falling mean about 3256 → 396). The microSD card was detected; no Events were written to it. **Events V1** keeps metadata for up to 24 captures in RAM: ID, uptime, trigger, rate, 70/30 index, ADC min/max and means. The LCD Dashboard shows the Event count; the Web Events page lists and opens metadata. Only one RAW capture remains available: after rearming or another capture, older metadata remains accessible while its RAW is marked as no longer retained.
+**Validated on real hardware:** Waveshare ESP32-C6, USB/Serial, LCD, touch, QMI8658A, Wi-Fi AP/STA, local Web UI, Dashboard, Scope, Events and Start/Stop. GPIO5 remains isolated from the KNX bus: ESP-IDF continuous ADC + DMA runs near **83.33 kSamples/s** with a **50,000-sample / 100 KB** ring, 70% before and 30% after the trigger, and rising, falling and manual triggers. GND/3V3 edges were tested physically. The LCD Dashboard and Events counter were visually validated.
 
-An approximately **10-minute** ADC + DMA + LCD + touch + Wi-Fi + Web coexistence test measured near 83,333 samples/s, **zero ADC overruns**, **zero DMA read errors**, and no spontaneous reboot or watchdog. About 160,544 bytes of heap remained after stopping; the observed minimum under load was about 124,908 bytes. One isolated HTTP request timed out, after which the server continued to work.
+**Sessions + SD V1:** START creates a persistent session and STOP closes it. RAM retains 24 metadata records and one complete RAW capture; SD retains the Event and RAW history. A session interrupted by reboot is marked `INTERRUPTED` while finalized captures remain readable. One 50-manual-capture session produced **50/50 valid RAW files**, including its oldest capture after RAM rotation; all 50 headers and CRCs were checked. Both a closed and an interrupted session remained accessible after reboot.
 
-The final-firmware **612-second** Events V1 coexistence test averaged **83,334 samples/s** across 113 polls, with **0 ADC overruns**, **0 DMA read errors**, **0 test-request failures**, **0 reboots**, and **0 WebSocket errors**. The lowest free heap seen by polling was **146,092 bytes**; the board’s internal minimum was **114,700 bytes**, and the lowest observed largest free block was **120,820 bytes**. There were no HTTP 4xx/5xx responses or timeouts during these 612 seconds. A separate **26-manual-capture** test validated rotation of the **24 metadata records** and retention of one RAW capture, with **0 ADC overruns**.
+The corrected firmware completed **630 s** with **28 persisted manual captures**: average capture rate **83,286 samples/s** (min/max **82,732 / 83,325**), **0 ADC overruns**, **0 DMA errors**, **0 SD write errors**, **0 HTTP test failures**, **0 reboots**, and **0 lost captures**. All 28 RAW headers and CRCs were also verified. Final free heap was **118,392 bytes**; internal minimum **83,204 bytes**, lowest observed largest free block **90,100 bytes**. The firmware wrote **2,822,502 bytes** to SD in this test. One transient WebSocket error reconnected. The mounted volume on the 16 GB test card is only about **126 MiB**; no partitioning or formatting was performed.
 
-Final visual check on the Waveshare board: the LCD Dashboard correctly shows **STOPPED**, **SCOPE READY**, **KNX NOT CONNECTED**, **EVENTS 26**, **ERRORS 0**, and **ADC 83.3 kS/s**; the DASH / SCOPE / EVENT / SYS navigation and START ANALYSIS button are visible. The Events V1 LCD counter is therefore **visually validated on real hardware**.
+**Limits:** floating GPIO5 produces test noise, never a KNX measurement. The protected KNX analog front-end, VBUS measurement, TP-UART, KNX decoding and correlation are not implemented. The PC application and reports remain future work.
 
-**Planned, not implemented or not validated:** protected KNX analog front-end, actual bus measurement, GPIO6 VBUS, TP-UART, telegram decoder, ACK / NAK / BUSY analysis, protocol/physical correlation, anomaly classification, SD Event and Session storage, PC application, reports and complete field validation.
+### Events and local API
 
-### Events V1 and local API
-
-A manual, rising or falling capture creates an Event after all 50,000 samples are complete. A circular list holds up to 24 metadata records in RAM and resets on reboot. `GET /api/events` lists them, `GET /api/events/{id}` returns one record, and `GET /api/events/{id}/capture` returns the decimated capture while it is retained. An older RAW capture returns HTTP 410; an unknown ID returns HTTP 404. The Web **Events** page provides the same view. Events V1 contain no KNX telegram data and are not saved to microSD.
+Existing Events routes remain available: `GET /api/events`, `GET /api/events/{id}` and `GET /api/events/{id}/capture`. An Event still in the RAM metadata ring can retrieve an older RAW from SD. The `/sessions` page and Sessions API provide the full persistent history. HTTP 410 means RAW unavailable and HTTP 404 means unknown ID. See the [capture format, Sessions API and reboot recovery](docs/sessions-sd-v1.md).
 
 ### Architecture
 
@@ -181,7 +179,7 @@ arduino-cli upload -p COM10 --fqbn 'esp32:esp32:esp32c6:CDCOnBoot=cdc,FlashSize=
 arduino-cli monitor -p COM10 -c baudrate=115200
 ~~~
 
-On first boot, the KNX-Analyzer-XXXX AP offers local configuration at http://192.168.4.1/. Two Wi-Fi profiles (primary and backup) are stored in NVS; AP fallback is intended when neither connects. No password is published in this repository. Existing SD contents are neither formatted nor used to save captures.
+On first boot, the KNX-Analyzer-XXXX AP offers local configuration at http://192.168.4.1/. Two Wi-Fi profiles (primary and backup) are stored in NVS; AP fallback is intended when neither connects. No password is published. The SD card is never formatted; the project writes only under `/knx-analyzer/`.
 
 ### Method and license
 

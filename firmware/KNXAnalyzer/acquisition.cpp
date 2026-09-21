@@ -1,6 +1,7 @@
 #include "acquisition.h"
 #include "analysis.h"
 #include "events.h"
+#include "storage.h"
 
 #include <esp_adc/adc_continuous.h>
 #include <esp_heap_caps.h>
@@ -225,7 +226,7 @@ bool begin() {
 }
 
 bool start() {
-  if (!adcHandle) return false;
+  if (!adcHandle || storage::busy()) return false;
   if (state.running) return true;
   if (state.captured) {
     state.captured = false;
@@ -259,7 +260,7 @@ bool stop() {
 }
 
 bool arm(TriggerMode trigger) {
-  if (!adcHandle) return false;
+  if (!adcHandle || storage::busy()) return false;
   mode = trigger;
   manualRequested = false;
   if (state.captured) {
@@ -279,6 +280,7 @@ bool manualTrigger() {
 }
 
 void clear() {
+  if (storage::busy()) return;
   if (state.captured) {
     state.captured = false;
     state.ringHead = 0;
@@ -329,6 +331,14 @@ bool waveform(Waveform &out) {
     if (out.low[x] < out.minRaw) out.minRaw = out.low[x];
     if (high > out.maxRaw) out.maxRaw = high;
   }
+  return true;
+}
+
+bool copyCaptureSamples(uint32_t captureNumber, uint32_t offset, uint16_t *out, uint32_t count) {
+  if (!ring || !out || !state.captured || state.captureNumber != captureNumber ||
+      offset > kRingSamples || count > kRingSamples - offset) return false;
+  const uint32_t startIndex = (state.triggerIndex + kRingSamples - kPreSamples) % kRingSamples;
+  for (uint32_t i = 0; i < count; ++i) out[i] = ring[(startIndex + offset + i) % kRingSamples];
   return true;
 }
 
@@ -404,7 +414,9 @@ void service() {
   event.adcMeanBefore = static_cast<uint16_t>(preSum / kPreSamples);
   event.adcMeanAfter = static_cast<uint16_t>(postSum / kPostSamples);
   event.captureNumber = snapshot.captureNumber;
-  events::record(event);
+  strlcpy(event.sessionId, storage::currentSessionId(), sizeof(event.sessionId));
+  event.eventId = events::record(event);
+  storage::queueEvent(event);
   Serial.printf("{\"type\":\"CAPTURE_READY\",\"number\":%lu,\"trigger\":\"%s\",\"trigger_index\":%lu,\"capture_start\":%lu,\"pre_samples\":%lu,\"post_samples\":%lu,\"ring_samples\":%lu,\"trigger_raw\":%u,\"min_raw\":%u,\"max_raw\":%u,\"pre_min\":%u,\"pre_max\":%u,\"pre_mean\":%lu,\"post_min\":%u,\"post_max\":%u,\"post_mean\":%lu,\"crossings_up\":%lu,\"crossings_down\":%lu,\"overruns_at_complete\":%lu,\"overruns_at_stop\":%lu,\"stop_delay_us\":%lu,\"heap_free\":%u}\n",
                 snapshot.captureNumber, modeName(mode), snapshot.triggerIndex, captureStart, snapshot.preCount, snapshot.postCount, kRingSamples,
                 ring[snapshot.triggerIndex], captureMin, captureMax, preMin, preMax, static_cast<uint32_t>(preSum / kPreSamples),

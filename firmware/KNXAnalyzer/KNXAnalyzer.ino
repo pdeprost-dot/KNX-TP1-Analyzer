@@ -8,8 +8,9 @@
 #include "wifi_manager.h"
 #include "hmi.h"
 #include "web_server.h"
+#include "storage.h"
 
-static constexpr char kVersion[] = "0.4.0-events";
+static constexpr char kVersion[] = "0.5.0-sessions";
 static Arduino_DataBus *lcdBus = new Arduino_HWSPI(15, 14, 1, 2, 3);
 static Arduino_GFX *lcd = new Arduino_ST7789(lcdBus, 22, 0, false, 172, 320, 34, 0, 34, 0);
 static bool lcdReady = false;
@@ -100,7 +101,7 @@ static void probeDisplayAndSd() {
   digitalWrite(14, HIGH);
   sdReady = SD.begin(4, SPI, 400000);
   Serial.printf("{\"type\":\"SD_STATS\",\"mounted\":%s,\"card_type\":%u,\"size_bytes\":%llu}\n", sdReady ? "true" : "false", static_cast<unsigned>(SD.cardType()), sdReady ? SD.cardSize() : 0ULL);
-  if (sdReady) SD.end();
+  if (sdReady) SD.end(); // storage mounts again at the operational SPI rate
 }
 
 void setup() {
@@ -117,6 +118,7 @@ void setup() {
   } else {
     Serial.println("{\"type\":\"ADC_ERROR\",\"stage\":\"imu_interrupts_not_high_z\"}");
   }
+  sdReady = storage::begin();
   network::begin();
   if (lcdReady) hmi::begin(lcd);
   webui::setSdReady(sdReady);
@@ -125,6 +127,7 @@ void setup() {
 
 void loop() {
   scope::service();
+  storage::tick();
   scope::pollSerial();
   network::tick();
   webui::tick();

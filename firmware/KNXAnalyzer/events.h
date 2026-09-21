@@ -10,6 +10,7 @@ enum class CaptureState : uint8_t { Available, NotRetained };
 
 struct Event {
   uint32_t eventId;
+  char sessionId[24];
   uint32_t uptimeMs;
   scope::TriggerMode triggerType;
   uint32_t sampleRate;
@@ -23,9 +24,11 @@ struct Event {
   uint16_t adcMeanAfter;
   uint32_t captureNumber;
   CaptureState captureState;
+  bool rawPersisted;
 };
 
-void record(const Event &event);
+uint32_t record(const Event &event);
+void markPersisted(uint32_t eventId);
 uint32_t count();
 uint8_t retainedCount();
 bool newest(uint8_t index, Event &out);

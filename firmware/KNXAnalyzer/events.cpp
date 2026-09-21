@@ -15,7 +15,7 @@ void resolveCapture(Event &event) {
 }
 }
 
-void record(const Event &event) {
+uint32_t record(const Event &event) {
   Event item = event;
   item.eventId = ++totalEvents;
   item.captureState = CaptureState::Available;
@@ -25,6 +25,14 @@ void record(const Event &event) {
   lastRawEventId = item.eventId;
   Serial.printf("{\"type\":\"EVENT_CREATED\",\"event_id\":%lu,\"capture_number\":%lu,\"heap_free\":%u}\n",
                 item.eventId, item.captureNumber, ESP.getFreeHeap());
+  return item.eventId;
+}
+
+void markPersisted(uint32_t eventId) {
+  for (uint8_t i = 0; i < used; ++i) {
+    const uint8_t slot = (nextSlot + kCapacity - 1 - i) % kCapacity;
+    if (ring[slot].eventId == eventId) { ring[slot].rawPersisted = true; return; }
+  }
 }
 
 uint32_t count() { return totalEvents; }
