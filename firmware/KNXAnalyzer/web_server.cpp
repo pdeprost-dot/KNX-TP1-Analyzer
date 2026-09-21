@@ -2,6 +2,7 @@
 #include "web_ui.h"
 #include "analysis.h"
 #include "acquisition.h"
+#include "events.h"
 #include "wifi_manager.h"
 #include "hmi.h"
 
@@ -17,13 +18,14 @@ WebServer server(80);
 WebSocketsServer sockets(81);
 uint32_t lastBroadcastMs = 0;
 bool sdReady = false;
+uint32_t httpErrors = 0;
 
 String encodeStatus() {
   const auto a = analysis::status();
   const auto adc = scope::status();
   const auto wifi = network::status();
   JsonDocument doc;
-  doc["firmware"] = "0.3.0-hmi";
+  doc["firmware"] = "0.4.0-events";
   doc["uptime_ms"] = millis();
   doc["flash_bytes"] = ESP.getFlashChipSize();
   doc["analysis"]["state"] = analysis::name(a.state);
@@ -55,13 +57,15 @@ String encodeStatus() {
   doc["sd"]["ready"] = sdReady;
   doc["knx"] = "NOT_CONNECTED";
   doc["vbus"] = "NOT_CONNECTED";
-  doc["events"] = 0;
+  doc["events"] = events::count();
+  doc["http"]["errors"] = httpErrors;
   String output;
   serializeJson(doc, output);
   return output;
 }
 
 void json(int code, const String &body) {
+  if (code >= 400) ++httpErrors;
   server.sendHeader("Cache-Control", "no-store");
   server.send(code, "application/json", body);
 }
@@ -97,6 +101,10 @@ void apiWaveform() {
   scope::Waveform wave = {};
   const bool available = scope::waveform(wave);
   const auto adc = scope::status();
+  uint32_t captureHz = adc.measuredHz;
+  events::Event latestEvent;
+  if (adc.captured && events::newest(0, latestEvent) && latestEvent.captureNumber == adc.captureNumber)
+    captureHz = latestEvent.sampleRate;
   String output;
   output.reserve(3500);
   output += "{\"state\":\"";
@@ -104,7 +112,7 @@ void apiWaveform() {
   output += "\",\"samples\":";
   output += available ? wave.samples : 0;
   output += ",\"sample_rate_hz\":";
-  output += adc.measuredHz;
+  output += captureHz;
   output += ",\"pre_samples\":";
   output += available && wave.captured ? scope::kPreSamples : 0;
   output += ",\"post_samples\":";
@@ -160,6 +168,66 @@ void apiWifiNetworks() {
   serializeJson(doc, output);
   json(200, output);
 }
+
+void eventJson(JsonObject node, const events::Event &event) {
+  node["event_id"] = event.eventId;
+  node["uptime_ms"] = event.uptimeMs;
+  node["trigger"] = events::triggerName(event.triggerType);
+  node["sample_rate_hz"] = event.sampleRate;
+  node["sample_count"] = event.sampleCount;
+  node["trigger_index"] = event.triggerIndex;
+  node["pre_trigger_samples"] = event.preTriggerSamples;
+  node["post_trigger_samples"] = event.postTriggerSamples;
+  node["adc_min"] = event.adcMin;
+  node["adc_max"] = event.adcMax;
+  node["adc_mean_before"] = event.adcMeanBefore;
+  node["adc_mean_after"] = event.adcMeanAfter;
+  node["capture_state"] = events::captureStateName(event.captureState);
+}
+
+void apiEventsList() {
+  JsonDocument doc;
+  doc["total"] = events::count();
+  doc["retained"] = events::retainedCount();
+  doc["capacity"] = events::kCapacity;
+  JsonArray items = doc["events"].to<JsonArray>();
+  events::Event event;
+  for (uint8_t i = 0; events::newest(i, event); ++i) {
+    eventJson(items.add<JsonObject>(), event);
+  }
+  String output;
+  serializeJson(doc, output);
+  json(200, output);
+}
+
+bool apiEventRoute() {
+  const String uri = server.uri();
+  constexpr char prefix[] = "/api/events/";
+  if (!uri.startsWith(prefix)) return false;
+  String remainder = uri.substring(sizeof(prefix) - 1);
+  const bool capture = remainder.endsWith("/capture");
+  if (capture) remainder.remove(remainder.length() - 8);
+  if (remainder.isEmpty()) { json(404, "{\"error\":\"event_not_found\"}"); return true; }
+  for (size_t i = 0; i < remainder.length(); ++i) {
+    if (!isDigit(remainder[i])) { json(404, "{\"error\":\"event_not_found\"}"); return true; }
+  }
+  const uint32_t id = static_cast<uint32_t>(remainder.toInt());
+  events::Event event;
+  if (id == 0 || !events::find(id, event)) {
+    json(404, "{\"error\":\"event_not_found\"}");
+  } else if (capture && !events::rawAvailable(event)) {
+    json(410, "{\"error\":\"raw_capture_not_retained\",\"event_id\":" + String(id) + "}");
+  } else if (capture) {
+    apiWaveform();
+  } else {
+    JsonDocument doc;
+    eventJson(doc.to<JsonObject>(), event);
+    String output;
+    serializeJson(doc, output);
+    json(200, output);
+  }
+  return true;
+}
 }
 
 void setSdReady(bool ready) { sdReady = ready; }
@@ -178,6 +246,7 @@ void begin() {
     json(okay ? 200 : 500, okay ? "{\"state\":\"STOPPED\"}" : "{\"error\":\"stop_failed\"}");
   });
   server.on("/api/scope/status", HTTP_GET, apiScopeStatus);
+  server.on("/api/events", HTTP_GET, apiEventsList);
   server.on("/api/scope/capture", HTTP_GET, apiWaveform);
   server.on("/api/scope/arm", HTTP_POST, [] {
     if (analysis::status().state != analysis::State::Running) {
@@ -209,6 +278,7 @@ void begin() {
     json(200, "{\"saved\":true,\"connecting\":true}");
   });
   server.onNotFound([] {
+    if (server.method() == HTTP_GET && apiEventRoute()) return;
     if (server.uri().startsWith("/api/")) json(404, "{\"error\":\"not_found\"}");
     else if (network::status().mode == network::Mode::AccessPoint) {
       server.sendHeader("Location", "http://192.168.4.1/"); server.send(302, "text/plain", "");

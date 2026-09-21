@@ -54,11 +54,17 @@ Aucun schéma de raccordement analogique au bus KNX n'est validé ou publié.
 
 ### État actuel
 
-**Implémenté et validé sur carte réelle :** support Waveshare ESP32-C6, USB/Serial, LCD, tactile capacitif, QMI8658A, provisioning Wi-Fi AP, connexion STA, serveur Web local, Dashboard responsive, Web Scope, API REST et Start/Stop depuis Web et LCD. Sur GPIO5 isolé du bus KNX : ADC continu ESP-IDF + DMA à environ **83,33 kéchantillons/s**, ring buffer de **50 000 échantillons (100 Ko)**, **35 000 avant trigger / 15 000 après** (70 % / 30 %), triggers montant, descendant et manuel, Scope LCD et Web. Les fronts GND/3V3 ont été testés physiquement (brut 0 à 3438 ; moyenne montant environ 27 → 3256, descendant environ 3256 → 396). La microSD a été détectée, sans écriture Events.
+**Implémenté et validé sur carte réelle :** support Waveshare ESP32-C6, USB/Serial, LCD, tactile capacitif, QMI8658A, provisioning Wi-Fi AP, connexion STA, serveur Web local, Dashboard responsive, Web Scope, API REST et Start/Stop depuis Web et LCD. Sur GPIO5 isolé du bus KNX : ADC continu ESP-IDF + DMA à environ **83,33 kéchantillons/s**, ring buffer de **50 000 échantillons (100 Ko)**, **35 000 avant trigger / 15 000 après** (70 % / 30 %), triggers montant, descendant et manuel, Scope LCD et Web. Les fronts GND/3V3 ont été testés physiquement (brut 0 à 3438 ; moyenne montant environ 27 → 3256, descendant environ 3256 → 396). La microSD a été détectée, sans écriture Events. **Events V1** conserve en RAM jusqu’à 24 métadonnées de captures : identifiant, temps depuis le démarrage, trigger, fréquence, index 70/30, min/max et moyennes ADC. Le Dashboard LCD affiche le compteur ; la page Web Events permet de consulter la liste et le détail. Une seule capture RAW reste disponible : après réarmement ou capture suivante, les anciennes métadonnées restent consultables mais leur RAW est indiqué comme non conservé.
 
 Le test de coexistence ADC + DMA + LCD + tactile + Wi-Fi + Web d'environ **10 minutes** a mesuré près de 83 333 échantillons/s, **zéro overrun ADC**, **zéro erreur de lecture DMA**, aucun redémarrage spontané ni watchdog. Environ 160 544 octets de heap étaient libres après arrêt ; le minimum observé sous charge était d'environ 124 908 octets. Une requête HTTP a expiré isolément ; le serveur a continué à fonctionner.
 
-**Prévu, non implémenté ou non validé :** front-end analogique KNX protégé, mesure réelle du bus, VBUS sur GPIO6, TP-UART, décodage des télégrammes, ACK / NAK / BUSY, corrélation protocole/physique, classification d'anomalies, Events en RAM, stockage Events et Sessions sur SD, application PC, rapports et validation terrain complète.
+Le test Events V1 sur le firmware final, sur **612 s**, a relevé une moyenne de **83 334 échantillons/s** sur 113 sondages, **0 overrun ADC**, **0 erreur DMA**, **0 échec de requête de test**, **0 redémarrage** et **0 erreur WebSocket**. La heap libre minimale relevée par les sondages était de **146 092 octets** ; le minimum interne de la carte a été **114 700 octets**, avec un plus grand bloc libre observé de **120 820 octets**. Aucun HTTP 4xx/5xx ni timeout pendant ces 612 s. Un test distinct de **26 captures manuelles** a validé la rotation des **24 métadonnées** et la conservation d’un seul RAW, avec **0 overrun ADC**.
+
+**Prévu, non implémenté ou non validé :** front-end analogique KNX protégé, mesure réelle du bus, VBUS sur GPIO6, TP-UART, décodage des télégrammes, ACK / NAK / BUSY, corrélation protocole/physique, classification d'anomalies, stockage Events et Sessions sur SD, application PC, rapports et validation terrain complète.
+
+### Events V1 et API locale
+
+Une capture manuelle, montante ou descendante crée un Event lorsque ses 50 000 échantillons sont complets. La liste est circulaire et limitée à 24 métadonnées en RAM ; elle est remise à zéro au redémarrage. `GET /api/events` renvoie la liste, `GET /api/events/{id}` le détail et `GET /api/events/{id}/capture` la capture décimée tant qu'elle est conservée. Une ancienne capture RAW renvoie HTTP 410 ; un identifiant inconnu renvoie HTTP 404. La page Web **Events** permet la même consultation. Les Events V1 ne contiennent aucun télégramme KNX et ne sont pas enregistrés sur microSD.
 
 ### Architecture
 
@@ -69,12 +75,13 @@ flowchart LR
   Test["GPIO5 test signal<br/>hors bus KNX / away from KNX"] --> ADC["Continuous ADC + DMA<br/>VALIDÉ / VALIDATED"]
   ADC --> Ring["Ring + triggers<br/>VALIDÉS / VALIDATED"]
   Ring --> Scope["LCD + Web Scope<br/>VALIDÉ / VALIDATED"]
-  Ring -. futur .-> Event["Events + correlation<br/>PRÉVUS / PLANNED"]
+  Ring --> Event["Events RAM<br/>VALIDÉS / VALIDATED"]
+  Event -. futur .-> Correlation["Corrélation protocole/physique<br/>PRÉVUE / PLANNED"]
   Bus["Bus KNX TP1"] -. futur .-> AFE["Protected analog front-end<br/>PRÉVU / PLANNED"]
   AFE -. futur .-> ADC
   Bus -. futur .-> UART["TP-UART<br/>PRÉVU / PLANNED"]
   UART -. futur .-> Decoder["KNX decoder<br/>PRÉVU / PLANNED"]
-  Decoder -. futur .-> Event
+  Decoder -. futur .-> Correlation
   Event -. futur .-> SD["Selective microSD storage<br/>PRÉVU / PLANNED"]
   Event -. futur .-> Reports["PC HTML/PDF reports<br/>PRÉVUS / PLANNED"]
 ~~~
@@ -144,11 +151,17 @@ No analog KNX bus wiring diagram has been validated or published.
 
 ### Current status
 
-**Implemented and validated on real hardware:** Waveshare ESP32-C6 support, USB/Serial, LCD, capacitive touch, QMI8658A, Wi-Fi AP provisioning, STA connection, local Web server, responsive Dashboard, Web Scope, REST API and Start/Stop from Web and LCD. On GPIO5 isolated from the KNX bus: ESP-IDF continuous ADC + DMA at approximately **83.33 kSamples/s**, a **50,000-sample (100 KB)** ring, **35,000 pre-trigger / 15,000 post-trigger** samples (70% / 30%), rising, falling and manual triggers, and LCD/Web Scope. Physical GND/3V3 edges were tested (raw 0 to 3438; rising mean about 27 → 3256, falling mean about 3256 → 396). The microSD card was detected; no Events were written to it.
+**Implemented and validated on real hardware:** Waveshare ESP32-C6 support, USB/Serial, LCD, capacitive touch, QMI8658A, Wi-Fi AP provisioning, STA connection, local Web server, responsive Dashboard, Web Scope, REST API and Start/Stop from Web and LCD. On GPIO5 isolated from the KNX bus: ESP-IDF continuous ADC + DMA at approximately **83.33 kSamples/s**, a **50,000-sample (100 KB)** ring, **35,000 pre-trigger / 15,000 post-trigger** samples (70% / 30%), rising, falling and manual triggers, and LCD/Web Scope. Physical GND/3V3 edges were tested (raw 0 to 3438; rising mean about 27 → 3256, falling mean about 3256 → 396). The microSD card was detected; no Events were written to it. **Events V1** keeps metadata for up to 24 captures in RAM: ID, uptime, trigger, rate, 70/30 index, ADC min/max and means. The LCD Dashboard shows the Event count; the Web Events page lists and opens metadata. Only one RAW capture remains available: after rearming or another capture, older metadata remains accessible while its RAW is marked as no longer retained.
 
 An approximately **10-minute** ADC + DMA + LCD + touch + Wi-Fi + Web coexistence test measured near 83,333 samples/s, **zero ADC overruns**, **zero DMA read errors**, and no spontaneous reboot or watchdog. About 160,544 bytes of heap remained after stopping; the observed minimum under load was about 124,908 bytes. One isolated HTTP request timed out, after which the server continued to work.
 
-**Planned, not implemented or not validated:** protected KNX analog front-end, actual bus measurement, GPIO6 VBUS, TP-UART, telegram decoder, ACK / NAK / BUSY analysis, protocol/physical correlation, anomaly classification, RAM Events, SD Event and Session storage, PC application, reports and complete field validation.
+The final-firmware **612-second** Events V1 coexistence test averaged **83,334 samples/s** across 113 polls, with **0 ADC overruns**, **0 DMA read errors**, **0 test-request failures**, **0 reboots**, and **0 WebSocket errors**. The lowest free heap seen by polling was **146,092 bytes**; the board’s internal minimum was **114,700 bytes**, and the lowest observed largest free block was **120,820 bytes**. There were no HTTP 4xx/5xx responses or timeouts during these 612 seconds. A separate **26-manual-capture** test validated rotation of the **24 metadata records** and retention of one RAW capture, with **0 ADC overruns**.
+
+**Planned, not implemented or not validated:** protected KNX analog front-end, actual bus measurement, GPIO6 VBUS, TP-UART, telegram decoder, ACK / NAK / BUSY analysis, protocol/physical correlation, anomaly classification, SD Event and Session storage, PC application, reports and complete field validation.
+
+### Events V1 and local API
+
+A manual, rising or falling capture creates an Event after all 50,000 samples are complete. A circular list holds up to 24 metadata records in RAM and resets on reboot. `GET /api/events` lists them, `GET /api/events/{id}` returns one record, and `GET /api/events/{id}/capture` returns the decimated capture while it is retained. An older RAW capture returns HTTP 410; an unknown ID returns HTTP 404. The Web **Events** page provides the same view. Events V1 contain no KNX telegram data and are not saved to microSD.
 
 ### Architecture
 

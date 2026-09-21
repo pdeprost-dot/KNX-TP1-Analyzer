@@ -1,6 +1,7 @@
 #include "hmi.h"
 #include "analysis.h"
 #include "acquisition.h"
+#include "events.h"
 #include "wifi_manager.h"
 
 #include <Arduino_GFX_Library.h>
@@ -17,6 +18,7 @@ uint32_t lastTouchPollMs = 0;
 uint32_t lastTapMs = 0;
 uint32_t lastActiveTouchMs = 0;
 bool touched = false;
+uint32_t lastEventCount = 0;
 constexpr uint16_t black = 0x0000;
 constexpr uint16_t white = 0xFFFF;
 constexpr uint16_t green = 0x07E0;
@@ -62,7 +64,7 @@ void dashboard() {
   text(6, 65, String("SCOPE ") + (adc.initialized ? "READY" : "ERROR"));
   text(6, 82, "BUS   --.- V");
   text(6, 99, "KNX   NOT CONNECTED");
-  text(6, 124, "EVENTS 0   ERRORS " + String(adc.readErrors + adc.overruns));
+  text(6, 124, String("EVENTS ") + String(events::count()) + "   ERRORS " + String(adc.readErrors + adc.overruns));
   text(6, 141, String("ADC ") + String(adc.measuredHz / 1000.0f, 1) + " kS/s");
   text(6, 163, String("WIFI ") + network::modeName(wifi.mode));
   text(6, 180, wifi.ssid.substring(0, 25));
@@ -75,7 +77,11 @@ void dashboard() {
 void scopePage() {
   const auto adc = scope::status();
   text(6, 5, adc.captured ? "CAPTURED" : (adc.running ? "SCOPE RUN" : "SCOPE HOLD"), adc.captured ? amber : green, 2);
-  text(6, 32, String(adc.measuredHz / 1000.0f, 1) + " kS/s  GPIO5");
+  uint32_t scopeHz = adc.measuredHz;
+  events::Event latestEvent;
+  if (adc.captured && events::newest(0, latestEvent) && latestEvent.captureNumber == adc.captureNumber)
+    scopeHz = latestEvent.sampleRate;
+  text(6, 32, String(scopeHz / 1000.0f, 1) + " kS/s  GPIO5");
   scope::Waveform wave = {};
   constexpr int x0 = 6;
   constexpr int y0 = 58;
@@ -159,6 +165,7 @@ void refresh() { dirty = true; }
 void tick() {
   if (!screen) return;
   const uint32_t now = millis();
+  if (events::count() != lastEventCount) { lastEventCount = events::count(); dirty = true; }
   if (now - lastTouchPollMs >= 5) {
     lastTouchPollMs = now;
     uint16_t x = 0, y = 0;

@@ -1,5 +1,6 @@
 #include "acquisition.h"
 #include "analysis.h"
+#include "events.h"
 
 #include <esp_adc/adc_continuous.h>
 #include <esp_heap_caps.h>
@@ -51,6 +52,8 @@ State state;
 uint32_t lastStatsMs = 0;
 uint32_t lastStatsSamples = 0;
 uint32_t lastMeasuredHz = 0;
+uint32_t acquisitionStartMicros = 0;
+uint32_t acquisitionStartSamples = 0;
 
 bool IRAM_ATTR onPoolOverflow(adc_continuous_handle_t, const adc_continuous_evt_data_t *, void *) {
   ++poolOverruns;
@@ -70,13 +73,17 @@ void reader(void *) {
     esp_err_t result = adc_continuous_read(adcHandle, dma, sizeof(dma), &bytes, 100);
     if (result == ESP_ERR_TIMEOUT) continue;
     if (result != ESP_OK) {
-      if (!readerRunning) continue;
+      if (!readerRunning || stopPending) continue;
       portENTER_CRITICAL(&statsMux);
       ++state.readErrors;
       portEXIT_CRITICAL(&statsMux);
       vTaskDelay(1);
       continue;
     }
+
+    // Keep draining DMA while the loop task performs the task-owned stop.
+    // The completed ring must remain frozen for Event statistics.
+    if (stopPending || !readerRunning) continue;
 
     uint32_t blockSamples = 0;
     uint32_t blockInvalid = 0;
@@ -145,7 +152,6 @@ void reader(void *) {
     if (completed) {
       // The ADC driver takes a task-owned power-management lock in start().
       // Stop from the Arduino loop task that started it, never from this reader.
-      readerRunning = false;
       portENTER_CRITICAL(&statsMux);
       state.overrunsAtComplete = poolOverruns;
       state.completeMicros = micros();
@@ -227,6 +233,8 @@ bool start() {
     state.ringValid = 0;
     state.postCount = 0;
   }
+  acquisitionStartMicros = micros();
+  acquisitionStartSamples = state.samples;
   const esp_err_t result = adc_continuous_start(adcHandle);
   if (result != ESP_OK) {
     Serial.printf("{\"type\":\"ADC_ERROR\",\"stage\":\"start\",\"code\":%d}\n", result);
@@ -326,8 +334,9 @@ bool waveform(Waveform &out) {
 
 void service() {
   if (!stopPending) return;
-  stopPending = false;
+  readerRunning = false;
   const esp_err_t result = adc_continuous_stop(adcHandle);
+  stopPending = false;
   portENTER_CRITICAL(&statsMux);
   if (result == ESP_OK) {
     state.captured = true;
@@ -377,6 +386,25 @@ void service() {
   state.captureMin = captureMin;
   state.captureMax = captureMax;
   portEXIT_CRITICAL(&statsMux);
+  const uint32_t elapsedUs = snapshot.completeMicros - acquisitionStartMicros;
+  const uint32_t acquired = snapshot.samples - acquisitionStartSamples;
+  const uint32_t captureRate = elapsedUs && acquired
+    ? static_cast<uint32_t>((static_cast<uint64_t>(acquired) * 1000000ULL) / elapsedUs)
+    : lastMeasuredHz;
+  events::Event event = {};
+  event.uptimeMs = millis();
+  event.triggerType = mode;
+  event.sampleRate = captureRate;
+  event.sampleCount = kRingSamples;
+  event.triggerIndex = kPreSamples;
+  event.preTriggerSamples = kPreSamples;
+  event.postTriggerSamples = kPostSamples;
+  event.adcMin = captureMin;
+  event.adcMax = captureMax;
+  event.adcMeanBefore = static_cast<uint16_t>(preSum / kPreSamples);
+  event.adcMeanAfter = static_cast<uint16_t>(postSum / kPostSamples);
+  event.captureNumber = snapshot.captureNumber;
+  events::record(event);
   Serial.printf("{\"type\":\"CAPTURE_READY\",\"number\":%lu,\"trigger\":\"%s\",\"trigger_index\":%lu,\"capture_start\":%lu,\"pre_samples\":%lu,\"post_samples\":%lu,\"ring_samples\":%lu,\"trigger_raw\":%u,\"min_raw\":%u,\"max_raw\":%u,\"pre_min\":%u,\"pre_max\":%u,\"pre_mean\":%lu,\"post_min\":%u,\"post_max\":%u,\"post_mean\":%lu,\"crossings_up\":%lu,\"crossings_down\":%lu,\"overruns_at_complete\":%lu,\"overruns_at_stop\":%lu,\"stop_delay_us\":%lu,\"heap_free\":%u}\n",
                 snapshot.captureNumber, modeName(mode), snapshot.triggerIndex, captureStart, snapshot.preCount, snapshot.postCount, kRingSamples,
                 ring[snapshot.triggerIndex], captureMin, captureMax, preMin, preMax, static_cast<uint32_t>(preSum / kPreSamples),
@@ -443,6 +471,8 @@ void pollSerial() {
           state.postCount = 0;
           portEXIT_CRITICAL(&statsMux);
           manualRequested = false;
+          acquisitionStartMicros = micros();
+          acquisitionStartSamples = state.samples;
           if (adc_continuous_start(adcHandle) == ESP_OK) {
             portENTER_CRITICAL(&statsMux);
             state.running = true;

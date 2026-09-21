@@ -9,7 +9,7 @@
 #include "hmi.h"
 #include "web_server.h"
 
-static constexpr char kVersion[] = "0.3.0-hmi";
+static constexpr char kVersion[] = "0.4.0-events";
 static Arduino_DataBus *lcdBus = new Arduino_HWSPI(15, 14, 1, 2, 3);
 static Arduino_GFX *lcd = new Arduino_ST7789(lcdBus, 22, 0, false, 172, 320, 34, 0, 34, 0);
 static bool lcdReady = false;
