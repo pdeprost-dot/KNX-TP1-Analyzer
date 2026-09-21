@@ -37,7 +37,7 @@ static bool writeRegister(uint8_t address, uint8_t reg, uint8_t value) {
 static void probeI2c() {
   Wire.begin(18, 19);
   Wire.setClock(100000);
-  pinMode(21, INPUT);
+  pinMode(21, INPUT_PULLUP);
   pinMode(20, OUTPUT);
   digitalWrite(20, LOW);
   delay(10);

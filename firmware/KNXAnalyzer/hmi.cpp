@@ -120,15 +120,15 @@ bool readTouch(uint16_t &x, uint16_t &y) {
   if (digitalRead(21) != LOW) return false;
   Wire.beginTransmission(0x63);
   Wire.write(0x01);
-  if (Wire.endTransmission(false) != 0 || Wire.requestFrom(static_cast<uint8_t>(0x63), static_cast<uint8_t>(6)) != 6) return false;
+  if (Wire.endTransmission(true) != 0 || Wire.requestFrom(static_cast<uint8_t>(0x63), static_cast<uint8_t>(6)) != 6) return false;
   uint8_t data[6];
   for (uint8_t &byte : data) byte = Wire.read();
   if (data[1] != 1) return false;
   const uint16_t rawX = ((data[2] & 0x0F) << 8) | data[3];
   const uint16_t rawY = ((data[4] & 0x0F) << 8) | data[5];
-  if (rawX >= 172 || rawY >= 320) return false;
+  if ((rawX == 0 && rawY == 0) || rawX >= 172 || rawY >= 320) return false;
   x = 171 - rawX; // panel X direction is opposite to LCD portrait orientation
-  y = rawY;
+  y = 319 - rawY;
   return true;
 }
 
