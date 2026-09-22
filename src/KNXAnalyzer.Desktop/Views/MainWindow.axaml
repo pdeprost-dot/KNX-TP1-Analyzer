@@ -4,6 +4,8 @@
   <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="12" RowSpacing="8">
     <DockPanel Grid.Row="0" LastChildFill="True">
       <Button DockPanel.Dock="Right" Content="Open SD / Sessions Folder" Click="OpenClicked" Margin="8,0,0,0" />
+      <Button DockPanel.Dock="Right" Content="Export JSON" Click="ExportJsonClicked" Margin="8,0,0,0" />
+      <Button DockPanel.Dock="Right" Content="Générer rapport" Click="ReportClicked" Margin="8,0,0,0" />
       <TextBox Text="{Binding FolderPath}" PlaceholderText="SD root or sessions folder" KeyDown="PathKeyDown" />
     </DockPanel>
     <TextBlock Grid.Row="1" Text="{Binding Status}" TextWrapping="Wrap" />
@@ -53,7 +55,7 @@
                   </DataTemplate></ListBox.ItemTemplate>
                 </ListBox>
               </Grid>
-              <Grid Grid.Column="1" RowDefinitions="Auto,220,Auto,Auto,*" RowSpacing="8">
+              <Grid Grid.Column="1" RowDefinitions="Auto,220,Auto,Auto,Auto,Auto,*" RowSpacing="8">
                 <StackPanel Orientation="Horizontal" Spacing="12">
                   <Button Content="Reset / Fit" Click="ResetWaveformClicked"/>
                   <TextBlock Text="Wheel: time zoom  •  Drag: pan  •  Ctrl+wheel: Y zoom  •  Double-click: fit" VerticalAlignment="Center"/>
@@ -61,9 +63,21 @@
                 <Border Grid.Row="1" BorderBrush="Gray" BorderThickness="1">
                   <views:WaveformView x:Name="Waveform" Capture="{Binding SelectedCapture}"/>
                 </Border>
-                <TextBlock Grid.Row="2" Text="{Binding AnalogAxis}"/>
-                <TextBlock Grid.Row="3" Text="{Binding AnalogVariationNotice}" FontWeight="Bold"/>
-                <ScrollViewer Grid.Row="4"><TextBlock Text="{Binding AnalogDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
+                <Grid Grid.Row="2" ColumnDefinitions="65,*,80" ColumnSpacing="8">
+                  <TextBlock Text="Zoom" VerticalAlignment="Center"/>
+                  <Slider x:Name="ZoomSlider" Grid.Column="1" Minimum="0" Maximum="1" ValueChanged="ZoomSliderChanged"/>
+                  <ComboBox x:Name="AnalogUnit" Grid.Column="2" SelectionChanged="AnalogUnitChanged" SelectedIndex="0">
+                    <ComboBoxItem Content="Estimated mV"/><ComboBoxItem Content="RAW"/>
+                  </ComboBox>
+                </Grid>
+                <Grid Grid.Row="3" ColumnDefinitions="65,*" ColumnSpacing="8">
+                  <TextBlock Text="Position" VerticalAlignment="Center"/>
+                  <Slider x:Name="PositionSlider" Grid.Column="1" Minimum="0" Maximum="1" ValueChanged="PositionSliderChanged"/>
+                </Grid>
+                <TextBlock Grid.Row="4" Text="{Binding AnalogAxis}" TextWrapping="Wrap"/>
+                <TextBlock Grid.Row="5" Text="{Binding AnalogVariationNotice}" FontWeight="Bold"/>
+                <ScrollViewer Grid.Row="6"><TextBlock Text="{Binding AnalogDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
+
               </Grid>
             </Grid>
           </TabItem>

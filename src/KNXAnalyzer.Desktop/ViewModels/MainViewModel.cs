@@ -45,6 +45,8 @@ public partial class MainViewModel : ViewModelBase
         RefreshAnalogSort();
         Summary = $"{value.Id}   {value.State}   {value.Generation}   Date: {value.DateTime ?? "unavailable (device clock unset)"}   Duration: {(value.DurationMs is long ms ? $"{ms / 1000.0:F1} s" : "unknown")}\n" +
             $"Candidates: {value.Candidates.Count}   Valid: {value.Count("VALID_KNOWN") + value.Count("VALID_UNKNOWN")}   ACK: {value.Candidates.Count(x => x.Ack == "ACK")}   Parity: {value.Count("INVALID_PARITY")}   Checksum: {value.Count("INVALID_CHECKSUM")}   Timing: {value.Count("INVALID_TIMING")}   Incomplete: {value.Count("INCOMPLETE")}   Analog: {value.AnalogEvents.Count}   Warnings: {value.Diagnostics.Count}";
+        var decoded = value.Candidates.Select(KnxTelegramDecoder.Decode).Where(x => x is not null).ToArray();
+        Summary += $"   Decoded standard: {decoded.Length}   Group: {decoded.Count(x => x!.DestinationType == "group")}   Individual: {decoded.Count(x => x!.DestinationType == "individual")}   Repeat: {decoded.Count(x => x!.Repeat)}";
         RefreshFilter();
         Status = value.Diagnostics.Count == 0 ? "Session loaded." : string.Join(" | ", value.Diagnostics.Take(3).Select(x => $"{System.IO.Path.GetFileName(x.File)}:{x.Line} {x.Message}"));
     }
@@ -84,10 +86,17 @@ public partial class MainViewModel : ViewModelBase
         })) VisibleCandidates.Add(item);
     }
     private static bool Known(string value) => value is "VALID_KNOWN" or "VALID_UNKNOWN" or "INVALID_PARITY" or "INVALID_TIMING" or "INVALID_CHECKSUM" or "INCOMPLETE" or "ANALOG_UNDECODED";
-    partial void OnSelectedCandidateChanged(Tp1Candidate? value) => Details = value is null ? "Select a TP1 candidate." :
-        $"Line {value.Line}   {value.Classification}\nTime: {value.Time}\nSource: {value.Source ?? "—"}   Destination: {value.Destination ?? "—"} ({value.DestinationType ?? "—"})\n" +
-        $"Generic fields: {(value.GenericFieldsFromRaw ? "derived from RAW" : "recorded or unavailable")}   Hop count: {value.HopCount?.ToString() ?? "—"}   TP length: {value.TpLength?.ToString() ?? "—"}   Checksum: {value.Checksum}   ACK: {value.Ack}\n" +
-        $"Parity errors: {value.ParityErrors}   Timing errors: {value.TimingErrors}   Overflow: {value.Overflow}\nRaw bytes: {string.Join(" ", value.RawBytes.Select(x => x.ToString("X2")))}\n\nOriginal JSON:\n{JsonSerializer.Serialize(value.Original, new JsonSerializerOptions { WriteIndented = true })}";
+    partial void OnSelectedCandidateChanged(Tp1Candidate? value)
+    {
+        if (value is null) { Details = "Select a TP1 candidate."; return; }
+        var telegram = KnxTelegramDecoder.Decode(value);
+        var decoded = telegram is null ? "Generic protocol fields: unavailable or not verified" :
+            $"DERIVED from RAW: {telegram.Format} | control 0x{telegram.Control:X2} | repeat {telegram.Repeat} | priority {telegram.Priority}\\n" +
+            $"TPCI {telegram.Tpci} | APCI {telegram.Apci?.ToString() ?? "unavailable"} | service {telegram.Service} | APDU {telegram.ApduHex} | payload {telegram.PayloadHex}";
+        Details = $"Line {value.Line}   {value.Classification}\\nTime: {value.Time}\\nSource: {value.Source ?? "unavailable"}   Destination: {value.Destination ?? "unavailable"} ({value.DestinationType ?? "unavailable"})\\n" +
+            $"Generic fields: {(value.GenericFieldsFromRaw ? "derived from RAW" : "recorded or unavailable")}   Hop count: {value.HopCount?.ToString() ?? "unavailable"}   TP length: {value.TpLength?.ToString() ?? "unavailable"}   Checksum: {value.Checksum}   ACK: {value.Ack}\\n" +
+            $"Parity errors: {value.ParityErrors}   Timing errors: {value.TimingErrors}   Overflow: {value.Overflow}\\n{decoded}\\nRaw bytes: {string.Join(" ", value.RawBytes.Select(x => x.ToString("X2")))}\\n\\nOriginal JSON:\\n{JsonSerializer.Serialize(value.Original, new JsonSerializerOptions { WriteIndented = true })}";
+    }
     partial void OnSelectedAnalogEventChanged(AnalogEvent? value)
     {
         SelectedCapture = null; AnalogAxis = "Time axis unavailable"; AnalogVariationNotice = "";
@@ -103,7 +112,7 @@ public partial class MainViewModel : ViewModelBase
             var pipeline = AnalogVoltagePipeline.FromSessionMetadata(SelectedSession.Metadata);
             string voltage;
             if (pipeline.Calibration is null) {
-                voltage = "ADC calibration unavailable. GPIO5 voltage is not estimated.";
+                voltage = $"Estimated ADC voltage — experimental calibration (GPIO5): {ExperimentalEstimatedCalibration.EstimateMillivolts(raw.Minimum):F0}–{ExperimentalEstimatedCalibration.EstimateMillivolts(raw.Maximum):F0} mV. One approximate point; proportional display assumption; accuracy unknown. RAW remains authoritative.";
             } else if (pipeline.TryEstimateGpio5Millivolts(raw.Minimum, out var lowMv) &&
                        pipeline.TryEstimateGpio5Millivolts(raw.Maximum, out var highMv)) {
                 voltage = $"Estimated ADC at GPIO5: {lowMv:F1}–{highMv:F1} mV (calibration: {pipeline.Calibration.Source}).";

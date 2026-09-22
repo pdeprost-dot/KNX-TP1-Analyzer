@@ -35,6 +35,15 @@ public class WaveformNavigationTests
         view.ResetFit();
         Assert.Equal(0, view.VisibleStartSample);
         Assert.Equal(50_000, view.VisibleEndSample);
+        view.SetZoomSlider(0.75);
+        Assert.True(view.VisibleEndSample - view.VisibleStartSample < 1_000);
+        view.SetPositionSlider(0);
+        Assert.InRange(view.VisibleStartSample, 0, 1);
+        view.SetPositionSlider(1);
+        Assert.InRange(view.VisibleEndSample, 49_999, 50_001);
+        view.ResetFit();
+        Assert.Equal(0, view.ZoomSliderValue);
+        Assert.Equal(0, view.PositionSliderValue);
         Assert.Equal(original, capture.Samples);
     }
 }

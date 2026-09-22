@@ -17,6 +17,11 @@ public class WaveformView : Control
     public event EventHandler<string>? ViewportChanged;
     public double VisibleStartSample => _start;
     public double VisibleEndSample => _end;
+    public bool ShowRaw { get; private set; }
+    public AdcCalibration? Calibration { get; private set; }
+    public void SetCalibration(AdcCalibration? calibration) { Calibration = calibration; UpdateVisibleRange(); InvalidateVisual(); }
+    public double ZoomSliderValue { get { var count = Capture?.Samples.Length ?? 0; return count <= 32 ? 0 : Math.Clamp(Math.Log(count / Math.Max(32, _end - _start)) / Math.Log(count / 32.0), 0, 1); } }
+    public double PositionSliderValue { get { var count = Capture?.Samples.Length ?? 0; var travel = count - (_end - _start); return travel <= 0 ? 0 : Math.Clamp(_start / travel, 0, 1); } }
 
     private double _start;
     private double _end;
@@ -67,6 +72,29 @@ public class WaveformView : Control
         InvalidateVisual();
     }
 
+    public void SetZoomSlider(double value)
+    {
+        var count = Capture?.Samples.Length ?? 0;
+        if (count == 0) return;
+        var targetWidth = count <= 32 ? count : count * Math.Pow(32.0 / count, Math.Clamp(value, 0, 1));
+        var center = (_start + _end) / 2;
+        _start = Math.Clamp(center - targetWidth / 2, 0, count - targetWidth);
+        _end = _start + targetWidth;
+        UpdateVisibleRange(); InvalidateVisual();
+    }
+
+    public void SetPositionSlider(double value)
+    {
+        var count = Capture?.Samples.Length ?? 0;
+        if (count == 0) return;
+        var width = _end - _start;
+        _start = Math.Clamp(value, 0, 1) * Math.Max(0, count - width);
+        _end = _start + width;
+        UpdateVisibleRange(); InvalidateVisual();
+    }
+
+    public void SetRawDisplay(bool raw) { ShowRaw = raw; UpdateVisibleRange(); InvalidateVisual(); }
+
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
         base.OnPointerWheelChanged(e);
@@ -112,7 +140,7 @@ public class WaveformView : Control
     {
         var capture = Capture;
         if (capture is null || capture.SampleRateHz == 0 || capture.Samples.Length == 0) {
-            ViewportChanged?.Invoke(this, "Visible time unavailable | Y: ADC RAW at GPIO5");
+            ViewportChanged?.Invoke(this, "Visible time unavailable");
             return;
         }
         var startMs = 1000.0 * (_start - capture.TriggerIndex) / capture.SampleRateHz;
@@ -120,7 +148,10 @@ public class WaveformView : Control
         string Format(double value) => value.ToString("+0.000;-0.000;0.000", CultureInfo.InvariantCulture);
         var trigger = _start <= capture.TriggerIndex && capture.TriggerIndex <= _end
             ? "trigger t=0 visible" : "trigger t=0 outside view";
-        ViewportChanged?.Invoke(this, $"Visible: {Format(startMs)} to {Format(endMs)} ms | {trigger} | {_end - _start:F0} samples | Y: ADC RAW at GPIO5");
+        var unit = ShowRaw ? "ADC RAW at GPIO5" : Calibration is null
+            ? "Estimated ADC voltage — experimental calibration (GPIO5 mV)"
+            : $"Estimated ADC voltage — recorded calibration ({Calibration.Source}, GPIO5 mV)";
+        ViewportChanged?.Invoke(this, $"Visible: {Format(startMs)} to {Format(endMs)} ms | duration {endMs - startMs:F3} ms | {trigger} | {_end - _start:F0} samples | Y: {unit}");
     }
 
     public override void Render(DrawingContext context)
@@ -142,12 +173,17 @@ public class WaveformView : Control
             visibleMin = Math.Min(visibleMin, capture.Samples[i]);
             visibleMax = Math.Max(visibleMax, capture.Samples[i]);
         }
-        var margin = Math.Max(10.0, (visibleMax - visibleMin) * 0.08);
-        var center = (visibleMin + visibleMax) / 2.0;
-        var halfRange = (visibleMax - visibleMin + 2 * margin) / (2 * _verticalZoom);
+        double Value(ushort raw) => ShowRaw ? raw :
+            Calibration?.TryEstimateMillivolts(raw, out var mv) == true ? mv :
+            ExperimentalEstimatedCalibration.EstimateMillivolts(raw);
+        var lowValue = Value(visibleMin);
+        var highValue = Value(visibleMax);
+        var margin = Math.Max(ShowRaw ? 10.0 : 10.0, (highValue - lowValue) * 0.08);
+        var center = (lowValue + highValue) / 2.0;
+        var halfRange = (highValue - lowValue + 2 * margin) / (2 * _verticalZoom);
         var yMin = center - halfRange;
         var yRange = 2 * halfRange;
-        double Y(ushort sample) => height - 1 - (sample - yMin) * (height - 2) / yRange;
+        double Y(ushort sample) => height - 1 - (Value(sample) - yMin) * (height - 2) / yRange;
 
         var wave = new Pen(Brushes.DodgerBlue, 1);
         if (span <= width * 2) {
