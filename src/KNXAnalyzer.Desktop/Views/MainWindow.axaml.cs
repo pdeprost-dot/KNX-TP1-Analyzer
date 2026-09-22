@@ -10,7 +10,12 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Waveform.ViewportChanged += (_, range) => {
+            if (DataContext is MainViewModel vm) vm.AnalogAxis = range;
+        };
     }
+
+    private void ResetWaveformClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e) => Waveform.ResetFit();
 
     private async void OpenClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {

@@ -26,3 +26,5 @@ See [docs/architecture.md](docs/architecture.md). The engine in `KNXAnalyzer.Cor
 Real bus validation requires actual `tp1-v1` SD sessions; synthetic tests verify file handling only. Do not commit real SD data or private network information.
 
 The Analog captures list shows computed min, max, peak-to-peak and CRC and can be sorted by peak-to-peak. Pass a folder path followed by --top-capture to select the capture with the greatest validated peak-to-peak value. Near-constant captures are called out explicitly.
+
+In the analog graph, use the wheel to zoom time, left-drag to pan, Ctrl+wheel to zoom vertically, and double-click or Reset/Fit to restore the full capture. The visible time range and trigger position are shown. Historical captures remain in RAW ADC counts because no ADC calibration is recorded.

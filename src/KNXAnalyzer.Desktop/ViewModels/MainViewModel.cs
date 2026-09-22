@@ -100,7 +100,20 @@ public partial class MainViewModel : ViewModelBase
             SelectedCapture = raw;
             AnalogVariationNotice = raw.PeakToPeak <= 2 ? "No analog variation in this capture" : "";
             AnalogAxis = raw.SampleRateHz == 0 ? "Time axis unavailable (sample rate 0)" : $"Time: {-1000.0 * raw.TriggerIndex / raw.SampleRateHz:F1} ms     trigger t=0     +{1000.0 * (raw.Samples.Length - raw.TriggerIndex) / raw.SampleRateHz:F1} ms";
-            AnalogDetails = $"RAW: {raw.Samples.Length} samples | {raw.SampleRateHz} Hz | min {raw.Minimum} | max {raw.Maximum} | P-P {raw.PeakToPeak} | mean {raw.Mean:F2} | CRC {(raw.CrcValid ? "OK" : "INVALID")} | trigger index {raw.TriggerIndex}\n\n" + AnalogDetails;
+            var pipeline = AnalogVoltagePipeline.FromSessionMetadata(SelectedSession.Metadata);
+            string voltage;
+            if (pipeline.Calibration is null) {
+                voltage = "ADC calibration unavailable. GPIO5 voltage is not estimated.";
+            } else if (pipeline.TryEstimateGpio5Millivolts(raw.Minimum, out var lowMv) &&
+                       pipeline.TryEstimateGpio5Millivolts(raw.Maximum, out var highMv)) {
+                voltage = $"Estimated ADC at GPIO5: {lowMv:F1}–{highMv:F1} mV (calibration: {pipeline.Calibration.Source}).";
+                if (pipeline.TryEstimateKnxBusVolts(raw.Minimum, out var lowBus) &&
+                    pipeline.TryEstimateKnxBusVolts(raw.Maximum, out var highBus))
+                    voltage += $" Estimated KNX bus: {lowBus:F2}–{highBus:F2} V (divider: {pipeline.Divider!.Source}).";
+            } else {
+                voltage = "ADC calibration does not cover this RAW range. GPIO5 voltage is unavailable.";
+            }
+            AnalogDetails = $"RAW at GPIO5: {raw.Samples.Length} samples | {raw.SampleRateHz} Hz | min {raw.Minimum} | max {raw.Maximum} | P-P {raw.PeakToPeak} | mean {raw.Mean:F2} | CRC {(raw.CrcValid ? "OK" : "INVALID")} | trigger index {raw.TriggerIndex}\n{voltage}\n\n" + AnalogDetails;
         } catch (Exception e) { AnalogDetails = $"RAW unavailable: {e.Message}\n\n" + AnalogDetails; }
     }
 }

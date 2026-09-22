@@ -53,11 +53,17 @@
                   </DataTemplate></ListBox.ItemTemplate>
                 </ListBox>
               </Grid>
-              <Grid Grid.Column="1" RowDefinitions="220,Auto,Auto,*" RowSpacing="8">
-                <Border BorderBrush="Gray" BorderThickness="1"><views:WaveformView Capture="{Binding SelectedCapture}"/></Border>
-                <TextBlock Grid.Row="1" Text="{Binding AnalogAxis}"/>
-                <TextBlock Grid.Row="2" Text="{Binding AnalogVariationNotice}" FontWeight="Bold"/>
-                <ScrollViewer Grid.Row="3"><TextBlock Text="{Binding AnalogDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
+              <Grid Grid.Column="1" RowDefinitions="Auto,220,Auto,Auto,*" RowSpacing="8">
+                <StackPanel Orientation="Horizontal" Spacing="12">
+                  <Button Content="Reset / Fit" Click="ResetWaveformClicked"/>
+                  <TextBlock Text="Wheel: time zoom  •  Drag: pan  •  Ctrl+wheel: Y zoom  •  Double-click: fit" VerticalAlignment="Center"/>
+                </StackPanel>
+                <Border Grid.Row="1" BorderBrush="Gray" BorderThickness="1">
+                  <views:WaveformView x:Name="Waveform" Capture="{Binding SelectedCapture}"/>
+                </Border>
+                <TextBlock Grid.Row="2" Text="{Binding AnalogAxis}"/>
+                <TextBlock Grid.Row="3" Text="{Binding AnalogVariationNotice}" FontWeight="Bold"/>
+                <ScrollViewer Grid.Row="4"><TextBlock Text="{Binding AnalogDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
               </Grid>
             </Grid>
           </TabItem>
