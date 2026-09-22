@@ -12,13 +12,14 @@ public partial class MainViewModel : ViewModelBase
     public ObservableCollection<Session> Sessions { get; } = [];
     public ObservableCollection<Tp1Candidate> VisibleCandidates { get; } = [];
     public ObservableCollection<AnalogEvent> AnalogEvents { get; } = [];
-    public ObservableCollection<ParticipantTraffic> Participants { get; } = [];
-    public ObservableCollection<GroupTraffic> Groups { get; } = [];
-    public ObservableCollection<TemporalInteraction> Interactions { get; } = [];
+    public ObservableCollection<ParticipantDisplay> Participants { get; } = [];
+    public ObservableCollection<GroupDisplay> Groups { get; } = [];
+    public ObservableCollection<InteractionDisplay> Interactions { get; } = [];
+    public ObservableCollection<ParticipantDestinationDisplay> ParticipantDestinations { get; } = [];
     public ObservableCollection<OfflineTp1Candidate> OfflineCandidates { get; } = [];
     public string[] Filters { get; } = ["All", "Valid", "Errors", "ACK", "Unknown"];
     public string[] AnalogSortOptions { get; } = ["P-P descending", "P-P ascending", "Event ID"];
-    public string[] InteractionSortOptions { get; } = ["Occurrences", "Sessions", "Median delay"];
+    public string[] InteractionSortOptions { get; } = ["Occurrences", "Sessions", "Délai médian"];
     [ObservableProperty] private string folderPath = "";
     [ObservableProperty] private string status = "Open an SD root, sessions folder, or one session folder.";
     [ObservableProperty] private Session? selectedSession;
@@ -33,17 +34,37 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty] private int selectedTabIndex;
     [ObservableProperty] private string analogVariationNotice = "";
     [ObservableProperty] private string analogAxis = "Time axis unavailable";
-    [ObservableProperty] private string trafficScopeSummary = "Observed traffic only; synthetic_test excluded.";
-    [ObservableProperty] private ParticipantTraffic? selectedParticipant;
-    [ObservableProperty] private GroupTraffic? selectedGroup;
-    [ObservableProperty] private TemporalInteraction? selectedInteraction;
-    [ObservableProperty] private string participantDetails = "Select a participant.";
-    [ObservableProperty] private string groupDetails = "Select a group.";
-    [ObservableProperty] private string interactionDetails = "Select a recurring temporal pattern.";
+    [ObservableProperty] private int observedTrafficCount;
+    [ObservableProperty] private int syntheticExcludedCount;
+    [ObservableProperty] private int participantCount;
+    [ObservableProperty] private int groupCount;
+    [ObservableProperty] private int interactionCount;
+    [ObservableProperty] private ParticipantDisplay? selectedParticipant;
+    [ObservableProperty] private GroupDisplay? selectedGroup;
+    [ObservableProperty] private InteractionDisplay? selectedInteraction;
+    [ObservableProperty] private string participantPriorities = "—";
+    [ObservableProperty] private string participantMotifs = "Aucun motif récurrent affichable.";
+    [ObservableProperty] private string groupServices = "—";
+    [ObservableProperty] private string groupValues = "—";
+    [ObservableProperty] private string groupInteractions = "Aucun motif récurrent affichable.";
     [ObservableProperty] private string selectedInteractionSort = "Occurrences";
-    [ObservableProperty] private string offlineAnalysisSummary = "Select an analog capture.";
+    [ObservableProperty] private string offlineAnalysisSummary = "Sélectionnez une capture analogique.";
+    [ObservableProperty] private int offlineSampleCount;
+    [ObservableProperty] private string offlineDuration = "—";
+    [ObservableProperty] private string offlineBaseline = "—";
+    [ObservableProperty] private string offlineNoiseRms = "—";
+    [ObservableProperty] private string offlineActivity = "—";
+    [ObservableProperty] private int offlinePulseCount;
+    [ObservableProperty] private int offlineCandidateCount;
+    [ObservableProperty] private int offlineValidFrameCount;
     [ObservableProperty] private OfflineTp1Candidate? selectedOfflineCandidate;
-    [ObservableProperty] private string offlineCandidateDetails = "No offline TP1 candidate selected.";
+    [ObservableProperty] private string offlineFrameTitle = "";
+    [ObservableProperty] private string offlineFrameSource = "—";
+    [ObservableProperty] private string offlineFrameDestination = "—";
+    [ObservableProperty] private string offlineFrameService = "—";
+    [ObservableProperty] private string offlineFrameChecksum = "—";
+    [ObservableProperty] private string offlineFrameTiming = "—";
+    [ObservableProperty] private string offlineFrameRaw = "—";
 
     public void OpenFolder(string path)
     {
@@ -60,31 +81,69 @@ public partial class MainViewModel : ViewModelBase
     {
         Participants.Clear(); Groups.Clear(); Interactions.Clear();
         var analysis = TrafficAnalyzer.Analyze(Sessions);
-        foreach (var item in analysis.Participants) Participants.Add(item);
-        foreach (var item in analysis.Groups) Groups.Add(item);
-        foreach (var item in analysis.Interactions) Interactions.Add(item);
-        TrafficScopeSummary = $"Observed decoded traffic: {analysis.ObservedTelegramCount} telegrams | synthetic_test excluded: {analysis.SyntheticTelegramCount} | participants: {analysis.Participants.Count} | groups: {analysis.Groups.Count} | recurring patterns: {analysis.Interactions.Count}";
+        foreach (var item in analysis.Participants)
+            Participants.Add(new ParticipantDisplay(item, analysis.ObservedTelegramCount == 0 ? 0 : 100.0 * item.TelegramCount / analysis.ObservedTelegramCount));
+        foreach (var item in analysis.Groups) Groups.Add(new GroupDisplay(item));
+        foreach (var item in analysis.Interactions) Interactions.Add(new InteractionDisplay(item));
+        ObservedTrafficCount = analysis.ObservedTelegramCount;
+        SyntheticExcludedCount = analysis.SyntheticTelegramCount;
+        ParticipantCount = analysis.Participants.Count;
+        GroupCount = analysis.Groups.Count;
+        InteractionCount = analysis.Interactions.Count;
+        SelectedParticipant = Participants.FirstOrDefault();
+        SelectedGroup = Groups.FirstOrDefault();
+        SelectedInteraction = Interactions.FirstOrDefault();
     }
-    partial void OnSelectedParticipantChanged(ParticipantTraffic? value) => ParticipantDetails = value is null ? "Select a participant." :
-        $"Observed participant {value.Address}\nTelegrams: {value.TelegramCount} | sessions: {value.SessionCount} | repeats: {value.Repeated} | checksum valid: {value.ChecksumValid}\n\nGroup destinations:\n{FormatCounts(value.GroupDestinations)}\n\nServices/APCI:\n{FormatCounts(value.Services)}\n\nAPDU:\n{FormatCounts(value.Apdus)}\n\nPayloads:\n{FormatCounts(value.Payloads)}\n\nPriorities:\n{FormatCounts(value.Priorities)}";
-    partial void OnSelectedGroupChanged(GroupTraffic? value) => GroupDetails = value is null ? "Select a group." :
-        $"Observed group {value.Address}\nTelegrams: {value.TelegramCount} | sessions: {value.SessionCount}\n\nParticipants:\n{FormatCounts(value.Sources)}\n\nServices/APCI:\n{FormatCounts(value.Services)}\n\nAPDU:\n{FormatCounts(value.Apdus)}\n\nPayloads:\n{FormatCounts(value.Payloads)}";
-    partial void OnSelectedInteractionChanged(TemporalInteraction? value) => InteractionDetails = value is null ? "Select a recurring temporal pattern." :
-        $"Motif temporel récurrent (proximity only)\nA: {value.A.Source} -> {value.A.Destination} | {value.A.Service} | APDU {value.A.ApduHex}\nB: {value.B.Source} -> {value.B.Destination} | {value.B.Service} | APDU {value.B.ApduHex}\nOccurrences: {value.Occurrences} | sessions: {value.SessionCount}\nDelay ms: min {value.MinimumDelayMs:F3} | median {value.MedianDelayMs:F3} | mean {value.MeanDelayMs:F3} | max {value.MaximumDelayMs:F3}\nNo command/response or causal relation is inferred.";
+
+    partial void OnSelectedParticipantChanged(ParticipantDisplay? value)
+    {
+        ParticipantDestinations.Clear();
+        if (value is null) return;
+        var address = value.Address;
+        var telegrams = Sessions.SelectMany(session => session.Candidates
+            .Where(candidate => !candidate.SyntheticTest)
+            .Select(candidate => KnxTelegramDecoder.Decode(candidate))
+            .Where(telegram => telegram is not null && telegram.Source == address)
+            .Cast<KnxTelegram>()).ToArray();
+        foreach (var group in telegrams.Where(x => x.DestinationType == "group").GroupBy(x => x.Destination)
+            .OrderByDescending(x => x.Count()).ThenBy(x => x.Key))
+            ParticipantDestinations.Add(new ParticipantDestinationDisplay(group.Key, group.Count(),
+                string.Join(", ", group.Select(x => x.Service).Distinct().Order()),
+                string.Join(", ", group.Select(x => string.IsNullOrEmpty(x.PayloadHex) ? x.ApduHex : $"{x.ApduHex} / {x.PayloadHex}").Distinct().Order())));
+        ParticipantPriorities = FormatCounts(value.Model.Priorities) +
+            $"\nRepeat: {value.Model.Repeated} · Checksum valide: {value.Model.ChecksumValid}/{value.Model.TelegramCount}";
+        ParticipantMotifs = FormatInteractions(Interactions.Where(x => x.Model.A.Source == address || x.Model.B.Source == address));
+    }
+
+    partial void OnSelectedGroupChanged(GroupDisplay? value)
+    {
+        if (value is null) return;
+        GroupServices = FormatCounts(value.Model.Services);
+        GroupValues = $"APDU\n{FormatCounts(value.Model.Apdus)}\n\nValeurs / payloads\n{FormatCounts(value.Model.Payloads)}";
+        GroupInteractions = FormatInteractions(Interactions.Where(x => x.Model.A.Destination == value.Address || x.Model.B.Destination == value.Address));
+    }
+
     partial void OnSelectedInteractionSortChanged(string value) => RefreshInteractionSort();
     private void RefreshInteractionSort()
     {
         var selected = SelectedInteraction;
         var ordered = SelectedInteractionSort switch {
             "Sessions" => Interactions.OrderByDescending(x => x.SessionCount).ThenByDescending(x => x.Occurrences).ToArray(),
-            "Median delay" => Interactions.OrderBy(x => x.MedianDelayMs).ThenByDescending(x => x.Occurrences).ToArray(),
+            "Délai médian" => Interactions.OrderBy(x => x.MedianDelayMs).ThenByDescending(x => x.Occurrences).ToArray(),
             _ => Interactions.OrderByDescending(x => x.Occurrences).ThenByDescending(x => x.SessionCount).ToArray()
         };
         Interactions.Clear(); foreach (var item in ordered) Interactions.Add(item);
         if (selected is not null && Interactions.Contains(selected)) SelectedInteraction = selected;
     }
+
     private static string FormatCounts(System.Collections.Generic.IEnumerable<TrafficCount> values) =>
-        string.Join("\n", values.Select(x => $"{x.Value}: {x.Count}"));
+        string.Join("\n", values.Select(x => $"{x.Value}  ·  {x.Count}"));
+    private static string FormatInteractions(System.Collections.Generic.IEnumerable<InteractionDisplay> values)
+    {
+        var rows = values.Take(10).Select(x => $"{x.Sequence}  ·  {x.Occurrences} occurrences");
+        var text = string.Join("\n", rows);
+        return string.IsNullOrEmpty(text) ? "Aucun motif récurrent affichable." : text;
+    }
 
     partial void OnSelectedSessionChanged(Session? value)
     {
@@ -148,7 +207,9 @@ public partial class MainViewModel : ViewModelBase
     partial void OnSelectedAnalogEventChanged(AnalogEvent? value)
     {
         SelectedCapture = null; AnalogAxis = "Time axis unavailable"; AnalogVariationNotice = "";
-        OfflineCandidates.Clear(); SelectedOfflineCandidate = null; OfflineAnalysisSummary = "Offline analysis unavailable.";
+        OfflineCandidates.Clear(); SelectedOfflineCandidate = null; OfflineAnalysisSummary = "Analyse offline indisponible.";
+        OfflineSampleCount = 0; OfflineDuration = OfflineBaseline = OfflineNoiseRms = OfflineActivity = "—";
+        OfflinePulseCount = OfflineCandidateCount = OfflineValidFrameCount = 0; ClearOfflineFrame();
         if (value is null || SelectedSession is null) { AnalogDetails = "Select an analog event."; return; }
         AnalogDetails = JsonSerializer.Serialize(value.Original, new JsonSerializerOptions { WriteIndented = true });
         if (!value.RawPersisted) return;
@@ -160,7 +221,15 @@ public partial class MainViewModel : ViewModelBase
             foreach (var candidate in offline.Tp1Candidates) OfflineCandidates.Add(candidate);
             SelectedOfflineCandidate = OfflineCandidates.FirstOrDefault(x => x.Classification == OfflineAnalogClassification.TP1_VALID_FRAME)
                 ?? OfflineCandidates.FirstOrDefault();
-            OfflineAnalysisSummary = $"Classification: {offline.Classification}\nSamples: {offline.SampleCount} | duration: {offline.DurationMilliseconds:F3} ms | rate: {offline.SampleRateHz} Hz\nBaseline: {offline.Baseline:F2} RAW | noise RMS: {offline.NoiseRms:F2} | median: {offline.Median:F2} | std dev: {offline.StandardDeviation:F2}\nEdges: {offline.EdgeCount} | excursions: {offline.Excursions.Count} | pulse candidates: {offline.PulseCandidates.Count}\nTP1 candidates: {offline.Tp1Candidates.Count} | valid frames: {offline.ValidFrameCount}\nDerived offline from RAW; no association with recorded traffic is inferred.";
+            OfflineAnalysisSummary = $"Analyse dérivée directement des échantillons ADC RAW · classification {offline.Classification}";
+            OfflineSampleCount = offline.SampleCount;
+            OfflineDuration = $"{offline.DurationMilliseconds:F3} ms";
+            OfflineBaseline = $"{offline.Baseline:F2} RAW";
+            OfflineNoiseRms = $"{offline.NoiseRms:F2} RAW";
+            OfflineActivity = offline.Classification == OfflineAnalogClassification.NO_SIGNAL ? "Aucune" : "Détectée";
+            OfflinePulseCount = offline.PulseCandidates.Count;
+            OfflineCandidateCount = offline.Tp1Candidates.Count;
+            OfflineValidFrameCount = offline.ValidFrameCount;
             AnalogVariationNotice = raw.PeakToPeak <= 2 ? "No analog variation in this capture" : "";
             AnalogAxis = raw.SampleRateHz == 0 ? "Time axis unavailable (sample rate 0)" : $"Time: {-1000.0 * raw.TriggerIndex / raw.SampleRateHz:F1} ms     trigger t=0     +{1000.0 * (raw.Samples.Length - raw.TriggerIndex) / raw.SampleRateHz:F1} ms";
             var pipeline = AnalogVoltagePipeline.FromSessionMetadata(SelectedSession.Metadata);
@@ -181,7 +250,19 @@ public partial class MainViewModel : ViewModelBase
     }
     partial void OnSelectedOfflineCandidateChanged(OfflineTp1Candidate? value)
     {
-        OfflineCandidateDetails = value is null ? "No offline TP1 candidate selected." :
-            $"Decoded offline from RAW\nOffset: sample {value.StartSample}, {value.StartMilliseconds:F3} ms from trigger | polarity: {value.Polarity}\nClassification: {value.Classification} | parity errors: {value.ParityErrors} | checksum: {(value.ChecksumValid ? "OK" : "INVALID")}\nTiming error: RMS {value.TimingRmsMicroseconds:F2} µs | max {value.TimingMaxErrorMicroseconds:F2} µs\nRaw bytes: {value.RawHex}\nSource: {value.Telegram?.Source ?? "unavailable"} | destination: {value.Telegram?.Destination ?? "unavailable"} | service: {value.Telegram?.Service ?? "unavailable"}\nReasons: {string.Join("; ", value.Reasons)}";
+        if (value is null) { ClearOfflineFrame(); return; }
+        OfflineFrameTitle = value.Classification == OfflineAnalogClassification.TP1_VALID_FRAME
+            ? "TRAME TP1 RECONSTRUITE DEPUIS LE RAW" : "CANDIDAT TP1 RECONSTRUIT DEPUIS LE RAW";
+        OfflineFrameSource = value.Telegram?.Source ?? "Indisponible";
+        OfflineFrameDestination = value.Telegram?.Destination ?? "Indisponible";
+        OfflineFrameService = value.Telegram?.Service ?? "Indisponible";
+        OfflineFrameChecksum = value.ChecksumValid ? "Valide" : "Invalide";
+        OfflineFrameTiming = $"{value.TimingRmsMicroseconds:F2} µs RMS · max {value.TimingMaxErrorMicroseconds:F2} µs";
+        OfflineFrameRaw = value.RawHex;
+    }
+    private void ClearOfflineFrame()
+    {
+        OfflineFrameTitle = "";
+        OfflineFrameSource = OfflineFrameDestination = OfflineFrameService = OfflineFrameChecksum = OfflineFrameTiming = OfflineFrameRaw = "—";
     }
 }

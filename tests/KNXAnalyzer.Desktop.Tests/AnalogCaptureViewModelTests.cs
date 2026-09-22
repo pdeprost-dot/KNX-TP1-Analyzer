@@ -25,6 +25,9 @@ public class AnalogCaptureViewModelTests
             Assert.Contains("P-P 200", vm.AnalogDetails);
             Assert.Contains("CRC OK", vm.AnalogDetails);
             Assert.Empty(vm.AnalogVariationNotice);
+            Assert.Equal(4, vm.OfflineSampleCount);
+            Assert.StartsWith("4", vm.OfflineDuration);
+            Assert.Equal(0, vm.OfflineValidFrameCount);
             vm.SelectedAnalogSort = "P-P ascending";
             Assert.Equal([3u, 2u], vm.AnalogEvents.Select(x => x.EventId));
             vm.SelectedSession = vm.Sessions.Single(x => x.Id == "s-a");
