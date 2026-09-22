@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/KNXAnalyzer.Core/KNXAnalyzer.Core.csproj" />
+    <Project Path="src/KNXAnalyzer.Desktop/KNXAnalyzer.Desktop.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/KNXAnalyzer.Core.Tests/KNXAnalyzer.Core.Tests.csproj" />
+  </Folder>
+</Solution>

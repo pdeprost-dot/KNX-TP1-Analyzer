@@ -1,0 +1,56 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:KNXAnalyzer.Desktop.ViewModels" xmlns:views="using:KNXAnalyzer.Desktop.Views" x:Class="KNXAnalyzer.Desktop.Views.MainWindow"
+        x:DataType="vm:MainViewModel" Title="KNX TP1 Analyzer Studio" Width="1400" Height="850" MinWidth="950" MinHeight="600">
+  <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="12" RowSpacing="8">
+    <DockPanel Grid.Row="0" LastChildFill="True">
+      <Button DockPanel.Dock="Right" Content="Open SD / Sessions Folder" Click="OpenClicked" Margin="8,0,0,0" />
+      <TextBox Text="{Binding FolderPath}" PlaceholderText="SD root or sessions folder" KeyDown="PathKeyDown" />
+    </DockPanel>
+    <TextBlock Grid.Row="1" Text="{Binding Status}" TextWrapping="Wrap" />
+    <Grid Grid.Row="2" ColumnDefinitions="270,6,*">
+      <Grid Grid.Column="0" RowDefinitions="Auto,*" RowSpacing="6">
+        <TextBlock Text="Sessions" FontWeight="Bold" />
+        <ListBox Grid.Row="1" ItemsSource="{Binding Sessions}" SelectedItem="{Binding SelectedSession}">
+          <ListBox.ItemTemplate><DataTemplate><StackPanel Margin="3"><TextBlock Text="{Binding Id}" FontWeight="SemiBold"/><TextBlock Text="{Binding State}"/></StackPanel></DataTemplate></ListBox.ItemTemplate>
+        </ListBox>
+      </Grid>
+      <GridSplitter Grid.Column="1" Width="6" ResizeDirection="Columns" />
+      <Grid Grid.Column="2" RowDefinitions="Auto,Auto,*,6,210" RowSpacing="6">
+        <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" FontWeight="SemiBold" />
+        <ComboBox Grid.Row="1" ItemsSource="{Binding Filters}" SelectedItem="{Binding SelectedFilter}" HorizontalAlignment="Left" MinWidth="150" />
+        <TabControl Grid.Row="2">
+          <TabItem Header="TP1 candidates">
+            <Grid RowDefinitions="Auto,*">
+              <Grid ColumnDefinitions="135,155,105,120,105,55,80,55,*" Margin="7"><TextBlock Text="Time"/><TextBlock Grid.Column="1" Text="Classification"/><TextBlock Grid.Column="2" Text="Source"/><TextBlock Grid.Column="3" Text="Destination"/><TextBlock Grid.Column="4" Text="Type / Service"/><TextBlock Grid.Column="5" Text="Length"/><TextBlock Grid.Column="6" Text="Checksum"/><TextBlock Grid.Column="7" Text="ACK"/><TextBlock Grid.Column="8" Text="Raw bytes"/></Grid>
+              <ListBox Grid.Row="1" ItemsSource="{Binding VisibleCandidates}" SelectedItem="{Binding SelectedCandidate}">
+                <ListBox.ItemTemplate><DataTemplate>
+                  <Grid ColumnDefinitions="135,155,105,120,105,55,80,55,*" Margin="3">
+                    <TextBlock Text="{Binding Time}"/><TextBlock Grid.Column="1" Text="{Binding Classification}"/>
+                    <TextBlock Grid.Column="2" Text="{Binding Source}"/><TextBlock Grid.Column="3" Text="{Binding Destination}"/>
+                    <TextBlock Grid.Column="4" Text="{Binding Service}"/><TextBlock Grid.Column="5" Text="{Binding RawBytes.Length}"/>
+                    <TextBlock Grid.Column="6" Text="{Binding Checksum}"/><TextBlock Grid.Column="7" Text="{Binding Ack}"/>
+                    <TextBlock Grid.Column="8" Text="{Binding RawHex}" TextTrimming="CharacterEllipsis"/>
+                  </Grid>
+                </DataTemplate></ListBox.ItemTemplate>
+              </ListBox>
+            </Grid>
+          </TabItem>
+          <TabItem Header="Analog captures">
+            <Grid ColumnDefinitions="220,*" ColumnSpacing="8">
+              <ListBox ItemsSource="{Binding AnalogEvents}" SelectedItem="{Binding SelectedAnalogEvent}">
+                <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding EventId}"/></DataTemplate></ListBox.ItemTemplate>
+              </ListBox>
+              <Grid Grid.Column="1" RowDefinitions="220,*" RowSpacing="8">
+                <Border BorderBrush="Gray" BorderThickness="1"><views:WaveformView Capture="{Binding SelectedCapture}"/></Border>
+                <ScrollViewer Grid.Row="1"><TextBlock Text="{Binding AnalogDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
+              </Grid>
+            </Grid>
+          </TabItem>
+        </TabControl>
+        <GridSplitter Grid.Row="3" Height="6" ResizeDirection="Rows" />
+        <ScrollViewer Grid.Row="4"><TextBlock Text="{Binding Details}" FontFamily="Consolas" TextWrapping="Wrap" /></ScrollViewer>
+      </Grid>
+    </Grid>
+    <TextBlock Grid.Row="3" Text="Read only • TP1 timestamps are device uptime when date_time is null • VALID_UNKNOWN is a valid frame" Opacity="0.7"/>
+  </Grid>
+</Window>
