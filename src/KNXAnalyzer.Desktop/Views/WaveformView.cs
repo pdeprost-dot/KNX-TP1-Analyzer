@@ -18,7 +18,11 @@ public class WaveformView : Control
         var capture = Capture;
         if (capture is null || capture.Samples.Length == 0 || Bounds.Width < 10 || Bounds.Height < 10) return;
         var width = Bounds.Width; var height = Bounds.Height;
-        var range = Math.Max(1, capture.Maximum - capture.Minimum);
+        var peakToPeak = capture.Maximum - capture.Minimum;
+        var margin = Math.Max(10.0, peakToPeak * 0.08);
+        var yMin = capture.Minimum - margin;
+        var yMax = capture.Maximum + margin;
+        var range = yMax - yMin;
         var columns = Math.Min((int)width, capture.Samples.Length);
         var wave = new Pen(Brushes.DodgerBlue, 1);
         for (var x = 0; x < columns; x++) {
@@ -26,8 +30,8 @@ public class WaveformView : Control
             var end = Math.Max(start + 1, (int)((long)(x + 1) * capture.Samples.Length / columns));
             ushort min = ushort.MaxValue, max = 0;
             for (var i = start; i < end; i++) { min = Math.Min(min, capture.Samples[i]); max = Math.Max(max, capture.Samples[i]); }
-            var top = height - 1 - (max - capture.Minimum) * (height - 2) / range;
-            var bottom = height - 1 - (min - capture.Minimum) * (height - 2) / range;
+            var top = height - 1 - (max - yMin) * (height - 2) / range;
+            var bottom = height - 1 - (min - yMin) * (height - 2) / range;
             context.DrawLine(wave, new Point(x, top), new Point(x, bottom));
         }
         var triggerX = width * capture.TriggerIndex / capture.Samples.Length;

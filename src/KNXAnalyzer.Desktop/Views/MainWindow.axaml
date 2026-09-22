@@ -18,7 +18,7 @@
       <Grid Grid.Column="2" RowDefinitions="Auto,Auto,*,6,210" RowSpacing="6">
         <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" FontWeight="SemiBold" />
         <ComboBox Grid.Row="1" ItemsSource="{Binding Filters}" SelectedItem="{Binding SelectedFilter}" HorizontalAlignment="Left" MinWidth="150" />
-        <TabControl Grid.Row="2">
+        <TabControl Grid.Row="2" SelectedIndex="{Binding SelectedTabIndex}">
           <TabItem Header="TP1 candidates">
             <Grid RowDefinitions="Auto,*">
               <Grid ColumnDefinitions="135,155,105,120,105,55,80,55,*" Margin="7"><TextBlock Text="Time"/><TextBlock Grid.Column="1" Text="Classification"/><TextBlock Grid.Column="2" Text="Source"/><TextBlock Grid.Column="3" Text="Destination"/><TextBlock Grid.Column="4" Text="Type / Service"/><TextBlock Grid.Column="5" Text="Length"/><TextBlock Grid.Column="6" Text="Checksum"/><TextBlock Grid.Column="7" Text="ACK"/><TextBlock Grid.Column="8" Text="Raw bytes"/></Grid>
@@ -36,13 +36,28 @@
             </Grid>
           </TabItem>
           <TabItem Header="Analog captures">
-            <Grid ColumnDefinitions="220,*" ColumnSpacing="8">
-              <ListBox ItemsSource="{Binding AnalogEvents}" SelectedItem="{Binding SelectedAnalogEvent}">
-                <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding EventId}"/></DataTemplate></ListBox.ItemTemplate>
-              </ListBox>
-              <Grid Grid.Column="1" RowDefinitions="220,Auto,*" RowSpacing="8">
+            <Grid ColumnDefinitions="430,*" ColumnSpacing="8">
+              <Grid RowDefinitions="Auto,Auto,*" RowSpacing="5">
+                <ComboBox ItemsSource="{Binding AnalogSortOptions}" SelectedItem="{Binding SelectedAnalogSort}" HorizontalAlignment="Left" MinWidth="180"/>
+                <Grid Grid.Row="1" ColumnDefinitions="70,75,75,75,80" Margin="7">
+                  <TextBlock Text="Event"/><TextBlock Grid.Column="1" Text="Min"/><TextBlock Grid.Column="2" Text="Max"/>
+                  <TextBlock Grid.Column="3" Text="P-P"/><TextBlock Grid.Column="4" Text="CRC"/>
+                </Grid>
+                <ListBox Grid.Row="2" ItemsSource="{Binding AnalogEvents}" SelectedItem="{Binding SelectedAnalogEvent}">
+                  <ListBox.ItemTemplate><DataTemplate>
+                    <Grid ColumnDefinitions="70,75,75,75,80" Margin="3">
+                      <TextBlock Text="{Binding EventId}"/><TextBlock Grid.Column="1" Text="{Binding MinimumText}"/>
+                      <TextBlock Grid.Column="2" Text="{Binding MaximumText}"/><TextBlock Grid.Column="3" Text="{Binding PeakToPeakText}"/>
+                      <TextBlock Grid.Column="4" Text="{Binding CrcText}"/>
+                    </Grid>
+                  </DataTemplate></ListBox.ItemTemplate>
+                </ListBox>
+              </Grid>
+              <Grid Grid.Column="1" RowDefinitions="220,Auto,Auto,*" RowSpacing="8">
                 <Border BorderBrush="Gray" BorderThickness="1"><views:WaveformView Capture="{Binding SelectedCapture}"/></Border>
-                <TextBlock Grid.Row="1" Text="{Binding AnalogAxis}"/><ScrollViewer Grid.Row="2"><TextBlock Text="{Binding AnalogDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
+                <TextBlock Grid.Row="1" Text="{Binding AnalogAxis}"/>
+                <TextBlock Grid.Row="2" Text="{Binding AnalogVariationNotice}" FontWeight="Bold"/>
+                <ScrollViewer Grid.Row="3"><TextBlock Text="{Binding AnalogDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
               </Grid>
             </Grid>
           </TabItem>

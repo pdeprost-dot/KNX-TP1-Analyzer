@@ -77,7 +77,12 @@ public class SessionReaderTests
             var capture = RawCapture.Read(file);
             Assert.Equal((uint)7, capture.EventId);
             Assert.Equal([1, 2], capture.Samples);
+            Assert.Equal((ushort)1, capture.Minimum);
+            Assert.Equal((ushort)2, capture.Maximum);
+            Assert.Equal(1, capture.PeakToPeak);
+            Assert.Equal(1.5, capture.Mean);
             Assert.True(capture.CrcValid);
+            Assert.Equal(1, capture.Summary.PeakToPeak);
         } finally { File.Delete(file); }
     }
 }

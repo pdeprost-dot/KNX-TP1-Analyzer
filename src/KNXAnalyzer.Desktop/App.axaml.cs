@@ -1,3 +1,4 @@
+using System.Linq;
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
@@ -19,6 +20,7 @@ public partial class App : Application
         {
             var vm = new MainViewModel();
             if (desktop.Args is { Length: > 0 }) vm.OpenFolder(desktop.Args[0]);
+            if (desktop.Args?.Contains("--top-capture") == true) vm.SelectLargestCapture();
             desktop.MainWindow = new MainWindow
             {
                 DataContext = vm,

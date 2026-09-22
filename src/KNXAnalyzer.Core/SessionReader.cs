@@ -56,7 +56,14 @@ public sealed class AnalogEvent
     public uint EventId { get; init; }
     public bool RawPersisted { get; init; }
     public JsonElement Original { get; init; }
+    public RawCaptureSummary? CaptureSummary { get; set; }
+    public string MinimumText => CaptureSummary?.Minimum.ToString() ?? "—";
+    public string MaximumText => CaptureSummary?.Maximum.ToString() ?? "—";
+    public string PeakToPeakText => CaptureSummary?.PeakToPeak.ToString() ?? "—";
+    public string CrcText => CaptureSummary is null ? "Unavailable" : CaptureSummary.CrcValid ? "OK" : "INVALID";
 }
+
+public sealed record RawCaptureSummary(int SampleCount, uint SampleRateHz, ushort Minimum, ushort Maximum, int PeakToPeak, double Mean, bool CrcValid);
 
 public static class SessionReader
 {
@@ -101,9 +108,20 @@ public static class SessionReader
                 Overflow = Bool(item, "overflow"), Original = item.Clone()
             });
         });
-        ReadJsonl(Path.Combine(directory, "events.jsonl"), session, (_, item) => session.AnalogEvents.Add(new AnalogEvent {
-            EventId = (uint)(Long(item, "event_id") ?? 0), RawPersisted = Bool(item, "raw_persisted"), Original = item.Clone()
-        }));
+        ReadJsonl(Path.Combine(directory, "events.jsonl"), session, (line, item) => {
+            var analog = new AnalogEvent {
+                EventId = (uint)(Long(item, "event_id") ?? 0), RawPersisted = Bool(item, "raw_persisted"), Original = item.Clone()
+            };
+            if (analog.RawPersisted) {
+                var rawPath = Path.Combine(directory, "captures", $"event-{analog.EventId:D6}.bin");
+                try {
+                    analog.CaptureSummary = RawCapture.Read(rawPath).Summary;
+                } catch (Exception e) when (e is IOException or UnauthorizedAccessException or NotSupportedException) {
+                    session.Diagnostics.Add(new Diagnostic(rawPath, line, e.Message));
+                }
+            }
+            session.AnalogEvents.Add(analog);
+        });
         return session;
     }
 
@@ -150,6 +168,9 @@ public sealed class RawCapture
     public ushort Maximum { get; init; }
     public ushort[] Samples { get; init; } = [];
     public bool CrcValid { get; init; }
+    public double Mean { get; init; }
+    public int PeakToPeak => Maximum - Minimum;
+    public RawCaptureSummary Summary => new(Samples.Length, SampleRateHz, Minimum, Maximum, PeakToPeak, Mean, CrcValid);
 
     public static RawCapture Read(string path)
     {
@@ -161,8 +182,14 @@ public sealed class RawCapture
         var count = u32(20);
         if (count > 10_000_000 || bytes.Length != 48L + count * 2) throw new InvalidDataException("RAW sample count or file length mismatch");
         var samples = new ushort[count];
-        for (var i = 0; i < samples.Length; i++) samples[i] = u16(48 + i * 2);
-        return new RawCapture { EventId = u32(12), SampleRateHz = u32(16), TriggerIndex = u32(24), Minimum = u16(36), Maximum = u16(38), Samples = samples,
+        ushort minimum = ushort.MaxValue, maximum = 0;
+        ulong sum = 0;
+        for (var i = 0; i < samples.Length; i++) {
+            var sample = u16(48 + i * 2); samples[i] = sample;
+            minimum = Math.Min(minimum, sample); maximum = Math.Max(maximum, sample); sum += sample;
+        }
+        if (samples.Length == 0) { minimum = 0; maximum = 0; }
+        return new RawCapture { EventId = u32(12), SampleRateHz = u32(16), TriggerIndex = u32(24), Minimum = minimum, Maximum = maximum, Mean = samples.Length == 0 ? 0 : (double)sum / samples.Length, Samples = samples,
             CrcValid = Crc32(bytes.AsSpan(48)) == u32(40) };
     }
     private static uint Crc32(ReadOnlySpan<byte> data)
