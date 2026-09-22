@@ -37,6 +37,7 @@ String encodeStatus() {
   doc["adc"]["ready"] = adc.initialized;
   doc["adc"]["running"] = adc.running;
   doc["adc"]["captured"] = adc.captured;
+  doc["adc"]["capture_number"] = adc.captureNumber;
   doc["adc"]["requested_hz"] = adc.requestedHz;
   doc["adc"]["measured_hz"] = adc.measuredHz;
   doc["adc"]["samples"] = adc.samples;
@@ -44,6 +45,7 @@ String encodeStatus() {
   doc["adc"]["read_errors"] = adc.readErrors;
   doc["adc"]["invalid"] = adc.invalid;
   doc["adc"]["ring_valid"] = adc.ringValid;
+  doc["adc"]["pre_samples"] = scope::kPreSamples;
   doc["adc"]["ring_wraps"] = adc.ringWraps;
   doc["adc"]["latest_raw"] = adc.latestRaw;
   doc["heap"]["free"] = ESP.getFreeHeap();
@@ -150,9 +152,14 @@ void sendWaveform(const scope::Waveform &wave, bool available, uint32_t sampleRa
   json(200, output);
 }
 void apiWaveform() {
+  const auto adc = scope::status();
+  if (adc.running) {
+    scope::Waveform empty = {};
+    sendWaveform(empty, false, adc.measuredHz, "ARMED", "LIVE");
+    return;
+  }
   scope::Waveform wave = {};
   const bool available = scope::waveform(wave);
-  const auto adc = scope::status();
   uint32_t captureHz = adc.measuredHz;
   events::Event latestEvent;
   if (adc.captured && events::newest(0, latestEvent) && latestEvent.captureNumber == adc.captureNumber)
@@ -349,6 +356,7 @@ unsigned long errorCount() { return httpErrors; }
 void begin() {
   server.on("/", HTTP_GET, [] { server.send_P(200, "text/html", kWebPage); });
   server.on("/sessions", HTTP_GET, [] { server.send_P(200, "text/html", kWebPage); });
+  server.on("/scope", HTTP_GET, [] { server.send_P(200, "text/html", kWebPage); });
   server.on("/api/status", HTTP_GET, [] { json(200, encodeStatus()); });
   server.on("/api/analysis/start", HTTP_POST, [] {
     if (storage::busy()) { json(409, "{\"error\":\"sd_capture_pending\"}"); return; }

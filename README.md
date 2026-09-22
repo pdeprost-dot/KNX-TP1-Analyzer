@@ -62,6 +62,10 @@ Le firmware corrigé a tenu **630 s** avec **28 captures manuelles persistées**
 
 **Limites :** GPIO5 flottant ne produit que du bruit de test, jamais une mesure KNX. Aucun front-end analogique KNX protégé, mesure VBUS, TP-UART, décodage ou corrélation KNX n'est implémenté. L'application PC et les rapports restent futurs.
 
+### Scope Web
+
+Ouvrir `/scope`, cliquer sur **START ANALYSIS**, puis **ARM MANUAL** et **MANUAL TRIGGER** après remplissage du prétrigger. La capture s'affiche automatiquement avec 50 000 échantillons, min/max, fréquence mesurée, source RAW et répartition 35 000 / 15 000. L'axe temporel est calculé depuis les métadonnées de la capture : environ −420 ms / t = 0 / +180 ms à 83,3 kéchantillons/s. Les boutons indisponibles indiquent la condition requise. **STOP ANALYSIS** clôture la session. Avec GPIO5 flottant, le tracé ne représente que l'entrée ADC de test.
+
 ### Events et API locale
 
 Les routes Events existantes restent disponibles : `GET /api/events`, `GET /api/events/{id}` et `GET /api/events/{id}/capture`. Un Event encore présent dans le ring RAM peut charger son ancien RAW depuis la SD. La page `/sessions` et l'API Sessions ouvrent tout l'historique persistant. HTTP 410 indique un RAW indisponible et HTTP 404 un identifiant inconnu. Consultez le [format des captures, les routes Sessions et la reprise après reboot](docs/sessions-sd-v1.md).
@@ -160,6 +164,10 @@ No analog KNX bus wiring diagram has been validated or published.
 The corrected firmware completed **630 s** with **28 persisted manual captures**: average capture rate **83,286 samples/s** (min/max **82,732 / 83,325**), **0 ADC overruns**, **0 DMA errors**, **0 SD write errors**, **0 HTTP test failures**, **0 reboots**, and **0 lost captures**. All 28 RAW headers and CRCs were also verified. Final free heap was **118,392 bytes**; internal minimum **83,204 bytes**, lowest observed largest free block **90,100 bytes**. The firmware wrote **2,822,502 bytes** to SD in this test. One transient WebSocket error reconnected. The mounted volume on the 16 GB test card is only about **126 MiB**; no partitioning or formatting was performed.
 
 **Limits:** floating GPIO5 produces test noise, never a KNX measurement. The protected KNX analog front-end, VBUS measurement, TP-UART, KNX decoding and correlation are not implemented. The PC application and reports remain future work.
+
+### Web Scope
+
+Open `/scope`, select **START ANALYSIS**, then **ARM MANUAL** and **MANUAL TRIGGER** once the pretrigger buffer is full. The capture appears automatically with 50,000 samples, min/max, measured rate, RAW source and the 35,000 / 15,000 split. The time axis uses capture metadata: roughly −420 ms / t = 0 / +180 ms at 83.3 kSamples/s. Disabled controls explain what is required. **STOP ANALYSIS** closes the session. With GPIO5 floating, the trace only shows the test ADC input.
 
 ### Events and local API
 
