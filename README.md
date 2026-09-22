@@ -23,7 +23,7 @@ Open the SD root, `knx-analyzer/sessions`, or an individual session folder. The 
 
 See [docs/architecture.md](docs/architecture.md). The engine in `KNXAnalyzer.Core` has no UI dependency. `KNXAnalyzer.Desktop` uses Avalonia and MVVM. Synthetic parser and RAW tests are in `KNXAnalyzer.Core.Tests`.
 
-Real bus validation requires actual `tp1-v1` SD sessions; synthetic tests verify file handling only. Do not commit real SD data or private network information.
+Real bus validation requires actual `tp1-v1` SD sessions; synthetic tests verify parsing, decoding, calibration, exports and waveform navigation. Do not commit real SD data or private network information.
 
 The Analog captures list shows computed min, max, peak-to-peak and CRC and can be sorted by peak-to-peak. Pass a folder path followed by --top-capture to select the capture with the greatest validated peak-to-peak value. Near-constant captures are called out explicitly.
 
