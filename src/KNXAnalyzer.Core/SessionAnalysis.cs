@@ -10,8 +10,9 @@ public static class SessionAnalysis
 
     public static object Create(Session session)
     {
-        var decoded = session.Candidates.Select(c => (Candidate: c, Telegram: KnxTelegramDecoder.Decode(c)))
+        var decodedAll = session.Candidates.Select(c => (Candidate: c, Telegram: KnxTelegramDecoder.Decode(c)))
             .Where(x => x.Telegram is not null).ToArray();
+        var decoded = decodedAll.Where(x => !x.Candidate.SyntheticTest).ToArray();
         var analog = session.AnalogEvents.Select(e => new {
             event_id = e.EventId, raw_persisted = e.RawPersisted, sample_count = e.CaptureSummary?.SampleCount,
             sample_rate_hz = e.CaptureSummary?.SampleRateHz, min_raw = e.CaptureSummary?.Minimum,
@@ -24,8 +25,10 @@ public static class SessionAnalysis
             session = new { id = session.Id, state = session.State, date_time = session.DateTime,
                 duration_ms = session.DurationMs, generation = session.Generation, recorded = session.Metadata },
             statistics = new { total_candidates = session.Candidates.Count,
-                valid_telegrams = session.Candidates.Count(c => c.IsValid && !c.IsAck),
+                valid_telegrams = session.Candidates.Count(c => c.IsValid && !c.IsAck && !c.SyntheticTest),
+                recorded_valid_telegrams_total = session.Candidates.Count(c => c.IsValid && !c.IsAck),
                 decoded_standard_telegrams = decoded.Length,
+                synthetic_test_telegrams = decodedAll.Count(x => x.Candidate.SyntheticTest),
                 ack = session.Candidates.Count(c => c.Ack == "ACK"),
                 nak = session.Candidates.Count(c => c.Ack == "NAK"),
                 busy = session.Candidates.Count(c => c.Ack == "BUSY"),
@@ -38,7 +41,8 @@ public static class SessionAnalysis
             participants = decoded.GroupBy(x => x.Telegram!.Source).Select(g => new { address = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToArray(),
             destinations = decoded.GroupBy(x => (x.Telegram!.Destination, x.Telegram.DestinationType))
                 .Select(g => new { address = g.Key.Destination, type = g.Key.DestinationType, count = g.Count() }).OrderByDescending(x => x.count).ToArray(),
-            telegrams = decoded.Select(x => new { line = x.Candidate.Line, timestamp_us = x.Candidate.MonotonicUs,
+            telegrams = decodedAll.Select(x => new { line = x.Candidate.Line, timestamp_us = x.Candidate.MonotonicUs,
+                synthetic_test = x.Candidate.SyntheticTest,
                 raw_hex = x.Candidate.RawHex, firmware_classification = x.Candidate.Classification,
                 recorded = x.Candidate.Original, derived = x.Telegram,
                 ack_relation = "indeterminate" }).ToArray(),
@@ -63,7 +67,9 @@ public static class SessionAnalysis
 
     public static string ToFrenchReport(Session session)
     {
-        var decoded = session.Candidates.Select(c => KnxTelegramDecoder.Decode(c)).Where(t => t is not null).Cast<KnxTelegram>().ToArray();
+        var decodedItems = session.Candidates.Select(c => (Candidate: c, Telegram: KnxTelegramDecoder.Decode(c))).Where(x => x.Telegram is not null).ToArray();
+        var decoded = decodedItems.Where(x => !x.Candidate.SyntheticTest).Select(x => x.Telegram!).ToArray();
+        var syntheticCount = decodedItems.Count(x => x.Candidate.SyntheticTest);
         var b = new StringBuilder();
         void Section(string name) { b.AppendLine(); b.AppendLine(name); b.AppendLine(new string('-', name.Length)); }
         b.AppendLine("KNX TP1 ANALYZER STUDIO"); b.AppendLine("Rapport d'analyse");
@@ -71,7 +77,8 @@ public static class SessionAnalysis
         b.AppendLine($"OBSERVÉ — Génération indicative : {session.Generation} ; horloge : {session.DateTime ?? "indisponible"}");
         Section("Résumé"); b.AppendLine($"OBSERVÉ — {session.Candidates.Count} candidats ; {session.Candidates.Count(c => c.IsValid && !c.IsAck)} trames valides ; {session.Candidates.Count(c => c.Ack == "ACK")} ACK.");
         b.AppendLine($"OBSERVÉ — Parité : {session.Count("INVALID_PARITY")} ; checksum : {session.Count("INVALID_CHECKSUM")} ; timing : {session.Count("INVALID_TIMING")}.");
-        Section("Trafic KNX"); b.AppendLine($"DÉRIVÉ — {decoded.Length} trames standard complètes décodées ; groupe : {decoded.Count(t => t.DestinationType == "group")} ; individuel : {decoded.Count(t => t.DestinationType == "individual")} ; répétées : {decoded.Count(t => t.Repeat)}.");
+        Section("Trafic KNX"); b.AppendLine($"OBSERVÉ — trafic terrain décodé : {decoded.Length} trames ; synthetic_test exclu : {syntheticCount}.");
+        b.AppendLine($"DÉRIVÉ — {decoded.Length} trames standard complètes décodées ; groupe : {decoded.Count(t => t.DestinationType == "group")} ; individuel : {decoded.Count(t => t.DestinationType == "individual")} ; répétées : {decoded.Count(t => t.Repeat)}.");
         Section("Participants observés"); foreach (var g in decoded.GroupBy(t => t.Source).OrderByDescending(g => g.Count()).Take(20)) b.AppendLine($"DÉRIVÉ — {g.Key} : {g.Count()}");
         Section("Adresses de groupe observées"); foreach (var g in decoded.Where(t => t.DestinationType == "group").GroupBy(t => t.Destination).OrderByDescending(g => g.Count()).Take(20)) b.AppendLine($"DÉRIVÉ — {g.Key} : {g.Count()}");
         Section("Services / APCI"); foreach (var g in decoded.GroupBy(t => t.Service).OrderByDescending(g => g.Count())) b.AppendLine($"DÉRIVÉ — {g.Key} : {g.Count()}");

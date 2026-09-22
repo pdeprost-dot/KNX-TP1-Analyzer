@@ -95,6 +95,18 @@ public class WaveformView : Control
 
     public void SetRawDisplay(bool raw) { ShowRaw = raw; UpdateVisibleRange(); InvalidateVisual(); }
 
+    public void ShowSampleRange(double start, double end)
+    {
+        var count = Capture?.Samples.Length ?? 0;
+        if (count == 0 || end <= start) return;
+        var padding = Math.Max(32, (end - start) * 0.2);
+        var width = Math.Clamp(end - start + 2 * padding, Math.Min(32, count), count);
+        _start = Math.Clamp((start + end) / 2 - width / 2, 0, count - width);
+        _end = _start + width;
+        _verticalZoom = 1;
+        UpdateVisibleRange(); InvalidateVisual();
+    }
+
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
         base.OnPointerWheelChanged(e);

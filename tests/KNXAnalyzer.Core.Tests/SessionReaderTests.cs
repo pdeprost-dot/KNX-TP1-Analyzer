@@ -14,7 +14,7 @@ public class SessionReaderTests
         try {
             File.WriteAllText(Path.Combine(sessionDir, "session.json"), """{"session_id":"s-test","state":"CLOSED","date_time":null,"duration_ms":1200,"event_count":0,"capture_format":1,"future_field":42}""");
             File.WriteAllText(Path.Combine(sessionDir, "tp1-candidates.jsonl"),
-                """{"type":"TP1_CANDIDATE","monotonic_us":123456,"date_time":null,"classification":"VALID_UNKNOWN","raw_hex":"BC110A0A0100E100","bytes":8,"future_field":{"x":1}}""" + "\n" +
+                """{"type":"TP1_CANDIDATE","monotonic_us":123456,"date_time":null,"classification":"VALID_UNKNOWN","raw_hex":"BC110A0A0100E100","bytes":8,"synthetic_test":true,"future_field":{"x":1}}""" + "\n" +
                 """{"type":"TP1_CANDIDATE","classification":"FUTURE_CLASS","raw_hex":"CC"}""" + "\n" +
                 "{invalid\n" +
                 """{"type":"TP1_CANDIDATE","classification":"VALID_KNOWN","raw_hex":"CC"}""" + "\n");
@@ -30,6 +30,7 @@ public class SessionReaderTests
             Assert.Equal(42, session.Metadata.GetProperty("future_field").GetInt32());
             Assert.True(session.Candidates[0].Original.TryGetProperty("future_field", out _));
             Assert.True(session.Candidates[0].IsValid);
+            Assert.True(session.Candidates[0].SyntheticTest);
             Assert.Equal("ACK", session.Candidates[2].Ack);
         } finally { Directory.Delete(root, true); }
     }

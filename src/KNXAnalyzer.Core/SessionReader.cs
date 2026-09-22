@@ -42,6 +42,7 @@ public sealed class Tp1Candidate
     public int TimingErrors { get; init; }
     public bool Overflow { get; init; }
     public JsonElement Original { get; init; }
+    public bool SyntheticTest { get; init; }
     public bool IsAck => RawBytes.Length == 1 && RawBytes[0] is 0xCC or 0x0C or 0xC0;
     public string Ack => RawBytes.Length == 1 ? RawBytes[0] switch { 0xCC => "ACK", 0x0C => "NAK", 0xC0 => "BUSY", _ => "" } : "";
     public string Checksum => RawBytes.Length >= 8 ? RawBytes.Aggregate((byte)0, (a, b) => (byte)(a ^ b)) == 0xFF ? "OK" : "Invalid" : "—";
@@ -105,7 +106,7 @@ public static class SessionReader
                 GenericFieldsFromRaw = decoded is not null && (recordedSource is null || recordedDestination is null),
                 HopCount = (int?)Long(item, "hop_count") ?? decoded?.HopCount, TpLength = (int?)Long(item, "tp_length") ?? decoded?.TpLength,
                 ParityErrors = (int)(Long(item, "parity_errors") ?? 0), TimingErrors = (int)(Long(item, "timing_errors") ?? 0),
-                Overflow = Bool(item, "overflow"), Original = item.Clone()
+                Overflow = Bool(item, "overflow"), Original = item.Clone(), SyntheticTest = Bool(item, "synthetic_test")
             });
         });
         ReadJsonl(Path.Combine(directory, "events.jsonl"), session, (line, item) => {

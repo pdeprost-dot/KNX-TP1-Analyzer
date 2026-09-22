@@ -11,8 +11,9 @@ public static class DatasetAnalysis
     public static string ToJson(IEnumerable<Session> source)
     {
         var sessions = source.ToArray();
-        var decoded = sessions.SelectMany(s => s.Candidates.Select(c => new { Session = s, Candidate = c, Telegram = KnxTelegramDecoder.Decode(c) }))
+        var decodedAll = sessions.SelectMany(s => s.Candidates.Select(c => new { Session = s, Candidate = c, Telegram = KnxTelegramDecoder.Decode(c) }))
             .Where(x => x.Telegram is not null).ToArray();
+        var decoded = decodedAll.Where(x => !x.Candidate.SyntheticTest).ToArray();
         var errors = sessions.SelectMany(s => s.Candidates.Where(c => c.IsError).Select(c => new {
             session_id = s.Id, line = c.Line, timestamp_us = c.MonotonicUs,
             classification = c.Classification, raw_hex = c.RawHex
@@ -35,8 +36,9 @@ public static class DatasetAnalysis
         var timelineBuckets = sessions.SelectMany(s => s.Candidates.Where(c => c.MonotonicUs is not null)
             .GroupBy(c => c.MonotonicUs!.Value / bucketUs)
             .Select(g => new { session_id = s.Id, start_timestamp_us = g.Key * bucketUs,
-                end_timestamp_us = (g.Key + 1) * bucketUs, candidates = g.Count(),
-                valid_telegrams = g.Count(c => c.IsValid && !c.IsAck), acks = g.Count(c => c.Ack == "ACK"),
+                end_timestamp_us = (g.Key + 1) * bucketUs, recorded_candidates = g.Count(),
+                observed_valid_telegrams = g.Count(c => c.IsValid && !c.IsAck && !c.SyntheticTest),
+                synthetic_test_telegrams = g.Count(c => c.SyntheticTest), acks = g.Count(c => c.Ack == "ACK"),
                 errors = g.Count(c => c.IsError) })).OrderBy(x => x.session_id).ThenBy(x => x.start_timestamp_us).ToArray();
         var model = new {
             schema_version = SessionAnalysis.SchemaVersion, studio_version = SessionAnalysis.StudioVersion,
@@ -50,8 +52,10 @@ public static class DatasetAnalysis
             acquisition_health = new { adc_overruns = health["adc_overruns"], dma_errors = health["dma_errors"],
                 sd_errors = health["sd_write_errors"], source = "recorded session metadata when present" },
             global_statistics = new { total_candidates = total,
-                valid_telegrams = sessions.Sum(s => s.Candidates.Count(c => c.IsValid && !c.IsAck)),
-                decoded_standard_telegrams = decoded.Length, ack = sessions.Sum(s => s.Candidates.Count(c => c.Ack == "ACK")),
+                valid_telegrams = sessions.Sum(s => s.Candidates.Count(c => c.IsValid && !c.IsAck && !c.SyntheticTest)),
+                recorded_valid_telegrams_total = sessions.Sum(s => s.Candidates.Count(c => c.IsValid && !c.IsAck)),
+                decoded_standard_telegrams = decoded.Length,
+                synthetic_test_telegrams = decodedAll.Count(x => x.Candidate.SyntheticTest), ack = sessions.Sum(s => s.Candidates.Count(c => c.Ack == "ACK")),
                 nak = sessions.Sum(s => s.Candidates.Count(c => c.Ack == "NAK")), busy = sessions.Sum(s => s.Candidates.Count(c => c.Ack == "BUSY")),
                 parity_errors = sessions.Sum(s => s.Count("INVALID_PARITY")), checksum_errors = sessions.Sum(s => s.Count("INVALID_CHECKSUM")),
                 timing_errors = sessions.Sum(s => s.Count("INVALID_TIMING")), other_errors = sessions.Sum(s => s.Candidates.Count(c => c.IsError && c.Classification is not ("INVALID_PARITY" or "INVALID_CHECKSUM" or "INVALID_TIMING"))),
@@ -91,7 +95,7 @@ public static class DatasetAnalysis
         b.AppendLine($"OBSERVÉ — Durée cumulée : {dataset.GetProperty("cumulative_duration_ms").GetInt64() / 1000.0:F1} s ({dataset.GetProperty("duration_known_sessions")} sessions renseignées).");
         b.AppendLine(dataset.GetProperty("observed_period_start").ValueKind == JsonValueKind.Null ? "NON DÉTERMINABLE — Période civile globale : horloges absentes." : $"OBSERVÉ — Période : {dataset.GetProperty("observed_period_start")} à {dataset.GetProperty("observed_period_end")}.");
         Section("État acquisition"); b.AppendLine($"OBSERVÉ — ADC overruns : {health.GetProperty("adc_overruns")} ; DMA errors : {health.GetProperty("dma_errors")} ; SD errors : {health.GetProperty("sd_errors")}.");
-        Section("Résumé trafic"); b.AppendLine($"OBSERVÉ — {stats.GetProperty("total_candidates")} candidats ; {stats.GetProperty("valid_telegrams")} télégrammes valides ; ACK {stats.GetProperty("ack")}, NAK {stats.GetProperty("nak")}, BUSY {stats.GetProperty("busy")}.");
+        Section("Résumé trafic"); b.AppendLine($"OBSERVÉ — {stats.GetProperty("total_candidates")} candidats ; trafic terrain décodé {stats.GetProperty("decoded_standard_telegrams")} ; synthetic_test exclu {stats.GetProperty("synthetic_test_telegrams")} ; ACK {stats.GetProperty("ack")}, NAK {stats.GetProperty("nak")}, BUSY {stats.GetProperty("busy")}.");
         b.AppendLine($"OBSERVÉ — Erreurs parité {stats.GetProperty("parity_errors")}, checksum {stats.GetProperty("checksum_errors")}, timing {stats.GetProperty("timing_errors")}, autres {stats.GetProperty("other_errors")} ; taux {stats.GetProperty("error_rate").GetDouble():P2}.");
         b.AppendLine($"DÉRIVÉ — Groupe {stats.GetProperty("group_traffic")}, individuel {stats.GetProperty("individual_traffic")}, répétitions {stats.GetProperty("repeated")}.");
         AppendTop(b, "Participants les plus actifs", root.GetProperty("participants"), "address");

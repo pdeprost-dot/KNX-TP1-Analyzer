@@ -39,3 +39,8 @@ The generic frame layout and control bit meanings follow the KNX Association's T
 Reports and JSON exports can target either the selected session or the full opened folder. The dataset JSON is a versioned analytical index: aggregates keep session provenance and error or analog references retain session IDs plus line, timestamp, or event ID where available. It does not flatten incompatible sessions into one capture.
 
 **Générer lot complet** creates a dated KNX-Analysis folder outside the selected SD data with the global report and index plus one report and JSON pair for every session containing candidates or analog events. Source sessions remain read only. The waveform has a graduated Y axis; switching between authoritative ADC RAW and estimated GPIO5 mV preserves samples and the complete time viewport.
+
+
+## Experimental PC analysis branch
+
+The experimental branch adds observed-traffic Participants, Groupes and Interactions views plus an offline RAW analyzer. Records marked synthetic_test remain inspectable but are excluded from field statistics by default. The analog panel reports robust RAW statistics, detected excursions and any conservatively reconstructed TP1 frame. See [docs/experimental-offline-analysis.md](docs/experimental-offline-analysis.md) for the algorithm, evidence requirements and limits.

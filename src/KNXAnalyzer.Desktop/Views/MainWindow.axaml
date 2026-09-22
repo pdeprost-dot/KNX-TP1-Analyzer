@@ -80,8 +80,61 @@
                 </Grid>
                 <TextBlock Grid.Row="4" Text="{Binding AnalogAxis}" TextWrapping="Wrap"/>
                 <TextBlock Grid.Row="5" Text="{Binding AnalogVariationNotice}" FontWeight="Bold"/>
-                <ScrollViewer Grid.Row="6"><TextBlock Text="{Binding AnalogDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
-
+                <Grid Grid.Row="6" ColumnDefinitions="*,*" ColumnSpacing="8">
+                  <Grid RowDefinitions="Auto,Auto,*">
+                    <TextBlock Text="OFFLINE ANALYSIS" FontWeight="Bold"/>
+                    <TextBlock Grid.Row="1" Text="{Binding OfflineAnalysisSummary}" FontFamily="Consolas" TextWrapping="Wrap" Margin="0,4"/>
+                    <ListBox Grid.Row="2" ItemsSource="{Binding OfflineCandidates}" SelectedItem="{Binding SelectedOfflineCandidate}">
+                      <ListBox.ItemTemplate><DataTemplate>
+                        <Grid ColumnDefinitions="85,145,*" Margin="2">
+                          <TextBlock Text="{Binding StartMilliseconds, StringFormat={}{0:F3} ms}"/>
+                          <TextBlock Grid.Column="1" Text="{Binding Classification}"/>
+                          <TextBlock Grid.Column="2" Text="{Binding RawHex}" TextTrimming="CharacterEllipsis"/>
+                        </Grid>
+                      </DataTemplate></ListBox.ItemTemplate>
+                    </ListBox>
+                  </Grid>
+                  <Grid Grid.Column="1" RowDefinitions="Auto,*" RowSpacing="6">
+                    <ScrollViewer MaxHeight="115"><TextBlock Text="{Binding OfflineCandidateDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
+                    <ScrollViewer Grid.Row="1"><TextBlock Text="{Binding AnalogDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
+                  </Grid>
+                </Grid>
+              </Grid>
+            </Grid>
+          </TabItem>
+          <TabItem Header="Participants">
+            <Grid RowDefinitions="Auto,*" ColumnDefinitions="320,*" ColumnSpacing="8">
+              <TextBlock Grid.ColumnSpan="2" Text="{Binding TrafficScopeSummary}" FontWeight="SemiBold" Margin="6"/>
+              <ListBox Grid.Row="1" ItemsSource="{Binding Participants}" SelectedItem="{Binding SelectedParticipant}">
+                <ListBox.ItemTemplate><DataTemplate><Grid ColumnDefinitions="100,90,90" Margin="3"><TextBlock Text="{Binding Address}"/><TextBlock Grid.Column="1" Text="{Binding TelegramCount, StringFormat={}Frames: {0}}"/><TextBlock Grid.Column="2" Text="{Binding SessionCount, StringFormat={}Sessions: {0}}"/></Grid></DataTemplate></ListBox.ItemTemplate>
+              </ListBox>
+              <ScrollViewer Grid.Row="1" Grid.Column="1"><TextBlock Text="{Binding ParticipantDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
+            </Grid>
+          </TabItem>
+          <TabItem Header="Groupes">
+            <Grid RowDefinitions="Auto,*" ColumnDefinitions="320,*" ColumnSpacing="8">
+              <TextBlock Grid.ColumnSpan="2" Text="{Binding TrafficScopeSummary}" FontWeight="SemiBold" Margin="6"/>
+              <ListBox Grid.Row="1" ItemsSource="{Binding Groups}" SelectedItem="{Binding SelectedGroup}">
+                <ListBox.ItemTemplate><DataTemplate><Grid ColumnDefinitions="100,90,90" Margin="3"><TextBlock Text="{Binding Address}"/><TextBlock Grid.Column="1" Text="{Binding TelegramCount, StringFormat={}Frames: {0}}"/><TextBlock Grid.Column="2" Text="{Binding SessionCount, StringFormat={}Sessions: {0}}"/></Grid></DataTemplate></ListBox.ItemTemplate>
+              </ListBox>
+              <ScrollViewer Grid.Row="1" Grid.Column="1"><TextBlock Text="{Binding GroupDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
+            </Grid>
+          </TabItem>
+          <TabItem Header="Interactions">
+            <Grid RowDefinitions="Auto,Auto,*" ColumnDefinitions="*" RowSpacing="5">
+              <TextBlock Text="{Binding TrafficScopeSummary}" FontWeight="SemiBold" Margin="6"/>
+              <ComboBox Grid.Row="1" ItemsSource="{Binding InteractionSortOptions}" SelectedItem="{Binding SelectedInteractionSort}" HorizontalAlignment="Left" MinWidth="160"/>
+              <Grid Grid.Row="2" ColumnDefinitions="2*,*" ColumnSpacing="8">
+                <ListBox ItemsSource="{Binding Interactions}" SelectedItem="{Binding SelectedInteraction}">
+                  <ListBox.ItemTemplate><DataTemplate>
+                    <Grid ColumnDefinitions="*,75,75,95" Margin="3">
+                      <TextBlock Text="{Binding A.Source}" />
+                      <TextBlock Grid.Column="1" Text="{Binding Occurrences, StringFormat={}N: {0}}"/>
+                      <TextBlock Grid.Column="2" Text="{Binding SessionCount, StringFormat={}Sessions: {0}}"/>
+                      <TextBlock Grid.Column="3" Text="{Binding MedianDelayMs, StringFormat={}{0:F3} ms}"/>
+                    </Grid></DataTemplate>
+                  </ListBox.ItemTemplate></ListBox>
+                <ScrollViewer Grid.Column="1"><TextBlock Text="{Binding InteractionDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
               </Grid>
             </Grid>
           </TabItem>

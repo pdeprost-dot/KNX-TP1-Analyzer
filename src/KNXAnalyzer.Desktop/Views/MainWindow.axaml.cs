@@ -29,6 +29,8 @@ public partial class MainWindow : Window
     {
         if (DataContext is not MainViewModel vm) return;
         vm.PropertyChanged += (_, e) => {
+            if (e.PropertyName == nameof(MainViewModel.SelectedOfflineCandidate) && vm.SelectedOfflineCandidate is { } candidate)
+                Waveform.ShowSampleRange(candidate.StartSample, candidate.EndSample);
             if (e.PropertyName is nameof(MainViewModel.SelectedCapture) or nameof(MainViewModel.SelectedSession))
             {
                 var calibration = vm.SelectedSession is null ? null :
