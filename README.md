@@ -32,3 +32,10 @@ In the analog graph, use the wheel to zoom time, left-drag to pan, Ctrl+wheel to
 The TP1 details include a conservative decoder for complete, checksum-valid standard frames: control, repeat, priority, addresses, hop count, TPCI, a small documented APCI service set, and APDU bytes. Unsupported or uncertain semantics remain Unknown. ACK-to-telegram assignment, DPTs, device roles, and group meanings are not inferred. Use Générer rapport for a French UTF-8 technician report or Export JSON for a versioned structured analysis. Choose an output path outside the SD session folder; exports contain session-derived private data and must be handled accordingly.
 
 The generic frame layout and control bit meanings follow the KNX Association's TP1 documentation: [KNX TP Telegram Visualiser](https://www.knx.org/projects/knx-tp-telegram-visualiser) and [KNX System Specifications](https://support.knx.org/hc/en-us/articles/360000040999-KNX-Specifications).
+
+
+## Dataset analysis
+
+Reports and JSON exports can target either the selected session or the full opened folder. The dataset JSON is a versioned analytical index: aggregates keep session provenance and error or analog references retain session IDs plus line, timestamp, or event ID where available. It does not flatten incompatible sessions into one capture.
+
+**Générer lot complet** creates a dated KNX-Analysis folder outside the selected SD data with the global report and index plus one report and JSON pair for every session containing candidates or analog events. Source sessions remain read only. The waveform has a graduated Y axis; switching between authoritative ADC RAW and estimated GPIO5 mV preserves samples and the complete time viewport.

@@ -53,35 +53,64 @@ public partial class MainWindow : Window
     {
         if (Waveform is not null && AnalogUnit is not null) Waveform.SetRawDisplay(AnalogUnit.SelectedIndex == 1);
     }
+    private bool DatasetScope => AnalysisScope.SelectedIndex == 1;
+
     private async void ReportClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         if (DataContext is not MainViewModel vm || vm.SelectedSession is null) return;
+        var global = DatasetScope;
         var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions {
-            Title = "Générer rapport", SuggestedFileName = $"rapport-{vm.SelectedSession.Id}.txt",
+            Title = global ? "Générer rapport global" : "Générer rapport de session",
+            SuggestedFileName = global ? "rapport-global.txt" : $"rapport-{vm.SelectedSession.Id}.txt",
             FileTypeChoices = [new FilePickerFileType("Texte UTF-8") { Patterns = ["*.txt"] }]
         });
         if (file?.TryGetLocalPath() is string path) {
-            try { EnsureOutsideSource(path, vm.SelectedSession); await File.WriteAllTextAsync(path, SessionAnalysis.ToFrenchReport(vm.SelectedSession)); vm.Status = $"Rapport créé : {path}"; }
-            catch (Exception ex) { vm.Status = ex.Message; }
+            try {
+                EnsureOutsideSource(path, vm.Sessions);
+                var content = global ? DatasetAnalysis.ToFrenchReport(vm.Sessions) : SessionAnalysis.ToFrenchReport(vm.SelectedSession);
+                await File.WriteAllTextAsync(path, content); vm.Status = $"Rapport créé : {path}";
+            } catch (Exception ex) { vm.Status = ex.Message; }
         }
     }
+
     private async void ExportJsonClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         if (DataContext is not MainViewModel vm || vm.SelectedSession is null) return;
+        var global = DatasetScope;
         var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions {
-            Title = "Exporter analysis.json", SuggestedFileName = "analysis.json",
+            Title = global ? "Exporter analysis-global.json" : "Exporter analysis.json",
+            SuggestedFileName = global ? "analysis-global.json" : "analysis.json",
             FileTypeChoices = [new FilePickerFileType("JSON") { Patterns = ["*.json"] }]
         });
         if (file?.TryGetLocalPath() is string path) {
-            try { EnsureOutsideSource(path, vm.SelectedSession); await File.WriteAllTextAsync(path, SessionAnalysis.ToJson(vm.SelectedSession)); vm.Status = $"JSON créé : {path}"; }
-            catch (Exception ex) { vm.Status = ex.Message; }
+            try {
+                EnsureOutsideSource(path, vm.Sessions);
+                var content = global ? DatasetAnalysis.ToJson(vm.Sessions) : SessionAnalysis.ToJson(vm.SelectedSession);
+                await File.WriteAllTextAsync(path, content); vm.Status = $"JSON créé : {path}";
+            } catch (Exception ex) { vm.Status = ex.Message; }
         }
     }
-    private static void EnsureOutsideSource(string outputPath, Session session)
+
+    private async void BatchClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        var source = Path.GetFullPath(session.DirectoryPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (DataContext is not MainViewModel vm || vm.Sessions.Count == 0) return;
+        var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = "Choisir le dossier parent du lot", AllowMultiple = false });
+        if (folders.Count == 0 || folders[0].TryGetLocalPath() is not string parent) return;
+        var target = Path.Combine(parent, $"KNX-Analysis-{DateTime.Now:yyyyMMdd-HHmmss}");
+        try {
+            EnsureOutsideSource(target, vm.Sessions);
+            DatasetAnalysis.WriteBatch(target, vm.Sessions);
+            vm.Status = $"Lot complet créé : {target}";
+        } catch (Exception ex) { vm.Status = ex.Message; }
+    }
+
+    private static void EnsureOutsideSource(string outputPath, System.Collections.Generic.IEnumerable<Session> sessions)
+    {
         var output = Path.GetFullPath(outputPath);
-        if (output.StartsWith(source, StringComparison.OrdinalIgnoreCase)) throw new IOException("Choose an output path outside the SD session folder.");
+        foreach (var session in sessions) {
+            var source = Path.GetFullPath(session.DirectoryPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (output.StartsWith(source, StringComparison.OrdinalIgnoreCase)) throw new IOException("Choose an output path outside the SD session folder.");
+        }
     }
 
     private void ResetWaveformClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e) => Waveform.ResetFit();

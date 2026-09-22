@@ -149,7 +149,7 @@ public class WaveformView : Control
         var trigger = _start <= capture.TriggerIndex && capture.TriggerIndex <= _end
             ? "trigger t=0 visible" : "trigger t=0 outside view";
         var unit = ShowRaw ? "ADC RAW at GPIO5" : Calibration is null
-            ? "Estimated ADC voltage — experimental calibration (GPIO5 mV)"
+            ? "Estimated — experimental calibration | GPIO5 mV"
             : $"Estimated ADC voltage — recorded calibration ({Calibration.Source}, GPIO5 mV)";
         ViewportChanged?.Invoke(this, $"Visible: {Format(startMs)} to {Format(endMs)} ms | duration {endMs - startMs:F3} ms | {trigger} | {_end - _start:F0} samples | Y: {unit}");
     }
@@ -161,6 +161,8 @@ public class WaveformView : Control
         if (capture is null || capture.Samples.Length == 0 || Bounds.Width < 10 || Bounds.Height < 10) return;
         var width = Bounds.Width;
         var height = Bounds.Height;
+        const double plotLeft = 74;
+        var plotWidth = Math.Max(1, width - plotLeft);
         var count = capture.Samples.Length;
         var start = Math.Clamp(_start, 0, count - 1);
         var end = Math.Clamp(_end, start + 1, count);
@@ -173,28 +175,42 @@ public class WaveformView : Control
             visibleMin = Math.Min(visibleMin, capture.Samples[i]);
             visibleMax = Math.Max(visibleMax, capture.Samples[i]);
         }
-        double Value(ushort raw) => ShowRaw ? raw :
-            Calibration?.TryEstimateMillivolts(raw, out var mv) == true ? mv :
-            ExperimentalEstimatedCalibration.EstimateMillivolts(raw);
-        var lowValue = Value(visibleMin);
-        var highValue = Value(visibleMax);
-        var margin = Math.Max(ShowRaw ? 10.0 : 10.0, (highValue - lowValue) * 0.08);
-        var center = (lowValue + highValue) / 2.0;
-        var halfRange = (highValue - lowValue + 2 * margin) / (2 * _verticalZoom);
-        var yMin = center - halfRange;
-        var yRange = 2 * halfRange;
-        double Y(ushort sample) => height - 1 - (Value(sample) - yMin) * (height - 2) / yRange;
+        double DisplayValue(double raw) => ShowRaw ? raw :
+            Calibration is null ? raw * ExperimentalEstimatedCalibration.ReferenceMillivolts / ExperimentalEstimatedCalibration.ReferenceRaw :
+            Calibration.TryEstimateMillivolts((ushort)Math.Clamp(Math.Round(raw), 0, ushort.MaxValue), out var mv) ? mv : double.NaN;
+        var margin = Math.Max(10.0, (visibleMax - visibleMin) * 0.08);
+        var center = (visibleMin + visibleMax) / 2.0;
+        var halfRange = (visibleMax - visibleMin + 2 * margin) / (2 * _verticalZoom);
+        var yMinRaw = center - halfRange;
+        var yRangeRaw = Math.Max(1, 2 * halfRange);
+        double Y(ushort sample) => height - 1 - (sample - yMinRaw) * (height - 2) / yRangeRaw;
+
+        var gridPen = new Pen(Brushes.LightGray, 1);
+        context.DrawLine(new Pen(Brushes.Gray, 1), new Point(plotLeft, 0), new Point(plotLeft, height));
+        for (var tick = 0; tick <= 4; tick++) {
+            var y = tick * (height - 1) / 4.0;
+            var rawAtTick = yMinRaw + (1 - tick / 4.0) * yRangeRaw;
+            var displayed = DisplayValue(rawAtTick);
+            var label = ShowRaw ? $"{displayed:F0}" : $"{displayed:F0} mV";
+            context.DrawLine(gridPen, new Point(plotLeft, y), new Point(width, y));
+            var text = new FormattedText(label, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                new Typeface("Inter"), 11, Brushes.Gray);
+            context.DrawText(text, new Point(Math.Max(0, plotLeft - text.Width - 5), Math.Clamp(y - text.Height / 2, 0, height - text.Height)));
+        }
+        var axisLabel = ShowRaw ? "ADC RAW" : "Estimated GPIO5 mV";
+        context.DrawText(new FormattedText(axisLabel, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+            new Typeface("Inter"), 11, Brushes.Gray), new Point(3, 2));
 
         var wave = new Pen(Brushes.DodgerBlue, 1);
-        if (span <= width * 2) {
+        if (span <= plotWidth * 2) {
             Point? previous = null;
             for (var i = first; i < last; i++) {
-                var point = new Point((i - start) * width / span, Y(capture.Samples[i]));
+                var point = new Point(plotLeft + (i - start) * plotWidth / span, Y(capture.Samples[i]));
                 if (previous is Point p) context.DrawLine(wave, p, point);
                 previous = point;
             }
         } else {
-            var columns = Math.Max(1, (int)width);
+            var columns = Math.Max(1, (int)plotWidth);
             for (var x = 0; x < columns; x++) {
                 var a = Math.Clamp((int)Math.Floor(start + x * span / columns), first, last - 1);
                 var b = Math.Clamp((int)Math.Ceiling(start + (x + 1) * span / columns), a + 1, last);
@@ -203,11 +219,11 @@ public class WaveformView : Control
                     low = Math.Min(low, capture.Samples[i]);
                     high = Math.Max(high, capture.Samples[i]);
                 }
-                context.DrawLine(wave, new Point(x, Y(high)), new Point(x, Y(low)));
+                context.DrawLine(wave, new Point(plotLeft + x, Y(high)), new Point(plotLeft + x, Y(low)));
             }
         }
         if (capture.TriggerIndex >= start && capture.TriggerIndex <= end) {
-            var triggerX = (capture.TriggerIndex - start) * width / span;
+            var triggerX = plotLeft + (capture.TriggerIndex - start) * plotWidth / span;
             context.DrawLine(new Pen(Brushes.OrangeRed, 1), new Point(triggerX, 0), new Point(triggerX, height));
         }
     }

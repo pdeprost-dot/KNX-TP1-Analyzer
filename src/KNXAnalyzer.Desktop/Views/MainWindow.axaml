@@ -4,8 +4,12 @@
   <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="12" RowSpacing="8">
     <DockPanel Grid.Row="0" LastChildFill="True">
       <Button DockPanel.Dock="Right" Content="Open SD / Sessions Folder" Click="OpenClicked" Margin="8,0,0,0" />
+      <Button DockPanel.Dock="Right" Content="Générer lot complet" Click="BatchClicked" Margin="8,0,0,0" />
       <Button DockPanel.Dock="Right" Content="Export JSON" Click="ExportJsonClicked" Margin="8,0,0,0" />
       <Button DockPanel.Dock="Right" Content="Générer rapport" Click="ReportClicked" Margin="8,0,0,0" />
+      <ComboBox x:Name="AnalysisScope" DockPanel.Dock="Right" SelectedIndex="0" MinWidth="170" Margin="8,0,0,0">
+        <ComboBoxItem Content="Session sélectionnée"/><ComboBoxItem Content="Dossier complet"/>
+      </ComboBox>
       <TextBox Text="{Binding FolderPath}" PlaceholderText="SD root or sessions folder" KeyDown="PathKeyDown" />
     </DockPanel>
     <TextBlock Grid.Row="1" Text="{Binding Status}" TextWrapping="Wrap" />
