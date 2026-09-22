@@ -35,7 +35,29 @@ public class SessionReaderTests
     }
 
     [Fact]
-    public void ReadsRawHeaderSamplesAndCrc()
+    public void DerivesMissingGenericFieldsFromSyntheticValidStandardFrame()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "knxstudio-missing-fields-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try {
+            File.WriteAllText(Path.Combine(folder, "session.json"), """{"session_id":"s-synthetic","state":"CLOSED"}""");
+            File.WriteAllText(Path.Combine(folder, "tp1-candidates.jsonl"),
+                """{"classification":"VALID_UNKNOWN","raw_hex":"BC12342110E1008035","bytes":9}""" + "\n" +
+                """{"classification":"VALID_UNKNOWN","raw_hex":"BC12342110E1008034","bytes":9}""" + "\n");
+            var session = SessionReader.OpenSession(folder);
+            var frame = session.Candidates[0];
+            Assert.True(frame.GenericFieldsFromRaw);
+            Assert.Equal("1.2.52", frame.Source);
+            Assert.Equal("4/1/16", frame.Destination);
+            Assert.Equal("group", frame.DestinationType);
+            Assert.Equal(6, frame.HopCount);
+            Assert.Equal(1, frame.TpLength);
+            Assert.False(session.Candidates[1].GenericFieldsFromRaw);
+            Assert.Null(session.Candidates[1].Source);
+        } finally { Directory.Delete(folder, true); }
+    }
+
+    [Fact]    public void ReadsRawHeaderSamplesAndCrc()
     {
         var file = Path.GetTempFileName();
         try {

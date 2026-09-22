@@ -11,7 +11,7 @@
       <Grid Grid.Column="0" RowDefinitions="Auto,*" RowSpacing="6">
         <TextBlock Text="Sessions" FontWeight="Bold" />
         <ListBox Grid.Row="1" ItemsSource="{Binding Sessions}" SelectedItem="{Binding SelectedSession}">
-          <ListBox.ItemTemplate><DataTemplate><StackPanel Margin="3"><TextBlock Text="{Binding Id}" FontWeight="SemiBold"/><TextBlock Text="{Binding State}"/></StackPanel></DataTemplate></ListBox.ItemTemplate>
+          <ListBox.ItemTemplate><DataTemplate><StackPanel Margin="3"><TextBlock Text="{Binding Id}" FontWeight="SemiBold"/><TextBlock Text="{Binding State}"/><TextBlock Text="{Binding Generation}" Opacity="0.7" TextWrapping="Wrap"/></StackPanel></DataTemplate></ListBox.ItemTemplate>
         </ListBox>
       </Grid>
       <GridSplitter Grid.Column="1" Width="6" ResizeDirection="Columns" />
@@ -40,9 +40,9 @@
               <ListBox ItemsSource="{Binding AnalogEvents}" SelectedItem="{Binding SelectedAnalogEvent}">
                 <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding EventId}"/></DataTemplate></ListBox.ItemTemplate>
               </ListBox>
-              <Grid Grid.Column="1" RowDefinitions="220,*" RowSpacing="8">
+              <Grid Grid.Column="1" RowDefinitions="220,Auto,*" RowSpacing="8">
                 <Border BorderBrush="Gray" BorderThickness="1"><views:WaveformView Capture="{Binding SelectedCapture}"/></Border>
-                <ScrollViewer Grid.Row="1"><TextBlock Text="{Binding AnalogDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
+                <TextBlock Grid.Row="1" Text="{Binding AnalogAxis}"/><ScrollViewer Grid.Row="2"><TextBlock Text="{Binding AnalogDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
               </Grid>
             </Grid>
           </TabItem>

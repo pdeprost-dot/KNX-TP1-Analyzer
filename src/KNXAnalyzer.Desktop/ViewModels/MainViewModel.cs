@@ -23,6 +23,7 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty] private string details = "Select a TP1 candidate.";
     [ObservableProperty] private string analogDetails = "Select an analog event.";
     [ObservableProperty] private RawCapture? selectedCapture;
+    [ObservableProperty] private string analogAxis = "Time axis unavailable";
 
     public void OpenFolder(string path)
     {
@@ -38,7 +39,7 @@ public partial class MainViewModel : ViewModelBase
         VisibleCandidates.Clear(); AnalogEvents.Clear(); SelectedCandidate = null; SelectedAnalogEvent = null;
         if (value is null) { Summary = "No session selected"; return; }
         foreach (var item in value.AnalogEvents) AnalogEvents.Add(item);
-        Summary = $"{value.Id}   {value.State}   Date: {value.DateTime ?? "unavailable (device clock unset)"}   Duration: {(value.DurationMs is long ms ? $"{ms / 1000.0:F1} s" : "unknown")}\n" +
+        Summary = $"{value.Id}   {value.State}   {value.Generation}   Date: {value.DateTime ?? "unavailable (device clock unset)"}   Duration: {(value.DurationMs is long ms ? $"{ms / 1000.0:F1} s" : "unknown")}\n" +
             $"Candidates: {value.Candidates.Count}   Valid: {value.Count("VALID_KNOWN") + value.Count("VALID_UNKNOWN")}   ACK: {value.Candidates.Count(x => x.Ack == "ACK")}   Parity: {value.Count("INVALID_PARITY")}   Checksum: {value.Count("INVALID_CHECKSUM")}   Timing: {value.Count("INVALID_TIMING")}   Incomplete: {value.Count("INCOMPLETE")}   Analog: {value.AnalogEvents.Count}   Warnings: {value.Diagnostics.Count}";
         RefreshFilter();
         Status = value.Diagnostics.Count == 0 ? "Session loaded." : string.Join(" | ", value.Diagnostics.Take(3).Select(x => $"{System.IO.Path.GetFileName(x.File)}:{x.Line} {x.Message}"));
@@ -56,11 +57,11 @@ public partial class MainViewModel : ViewModelBase
     private static bool Known(string value) => value is "VALID_KNOWN" or "VALID_UNKNOWN" or "INVALID_PARITY" or "INVALID_TIMING" or "INVALID_CHECKSUM" or "INCOMPLETE" or "ANALOG_UNDECODED";
     partial void OnSelectedCandidateChanged(Tp1Candidate? value) => Details = value is null ? "Select a TP1 candidate." :
         $"Line {value.Line}   {value.Classification}\nTime: {value.Time}\nSource: {value.Source ?? "—"}   Destination: {value.Destination ?? "—"} ({value.DestinationType ?? "—"})\n" +
-        $"Hop count: {value.HopCount?.ToString() ?? "—"}   TP length: {value.TpLength?.ToString() ?? "—"}   Checksum: {value.Checksum}   ACK: {value.Ack}\n" +
+        $"Generic fields: {(value.GenericFieldsFromRaw ? "derived from RAW" : "recorded or unavailable")}   Hop count: {value.HopCount?.ToString() ?? "—"}   TP length: {value.TpLength?.ToString() ?? "—"}   Checksum: {value.Checksum}   ACK: {value.Ack}\n" +
         $"Parity errors: {value.ParityErrors}   Timing errors: {value.TimingErrors}   Overflow: {value.Overflow}\nRaw bytes: {string.Join(" ", value.RawBytes.Select(x => x.ToString("X2")))}\n\nOriginal JSON:\n{JsonSerializer.Serialize(value.Original, new JsonSerializerOptions { WriteIndented = true })}";
     partial void OnSelectedAnalogEventChanged(AnalogEvent? value)
     {
-        SelectedCapture = null;
+        SelectedCapture = null; AnalogAxis = "Time axis unavailable";
         if (value is null || SelectedSession is null) { AnalogDetails = "Select an analog event."; return; }
         AnalogDetails = JsonSerializer.Serialize(value.Original, new JsonSerializerOptions { WriteIndented = true });
         if (!value.RawPersisted) return;
@@ -68,6 +69,7 @@ public partial class MainViewModel : ViewModelBase
         try {
             var raw = RawCapture.Read(path);
             SelectedCapture = raw;
+            AnalogAxis = raw.SampleRateHz == 0 ? "Time axis unavailable (sample rate 0)" : $"Time: {-1000.0 * raw.TriggerIndex / raw.SampleRateHz:F1} ms     trigger t=0     +{1000.0 * (raw.Samples.Length - raw.TriggerIndex) / raw.SampleRateHz:F1} ms";
             AnalogDetails = $"RAW: {raw.Samples.Length} samples, {raw.SampleRateHz} Hz, min/max {raw.Minimum}/{raw.Maximum}, trigger index {raw.TriggerIndex}, CRC {(raw.CrcValid ? "OK" : "INVALID")}\n\n" + AnalogDetails;
         } catch (Exception e) { AnalogDetails = $"RAW unavailable: {e.Message}\n\n" + AnalogDetails; }
     }

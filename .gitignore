@@ -16,3 +16,4 @@ events.jsonl
 tp1-candidates.jsonl
 *.bin
 *.part
+.validation/

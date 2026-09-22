@@ -17,6 +17,10 @@ public sealed class Session
     public List<Tp1Candidate> Candidates { get; } = [];
     public List<AnalogEvent> AnalogEvents { get; } = [];
     public List<Diagnostic> Diagnostics { get; } = [];
+    public string Generation => Candidates.Count > 0 ? "TP1 journal (exact build unrecorded)"
+        : File.Exists(Path.Combine(DirectoryPath, "tp1-candidates.jsonl")) ? "TP1 journal empty"
+        : AnalogEvents.Count > 0 ? "Sessions / Scope"
+        : "Session metadata only";
     public int Count(string classification) => Candidates.Count(x => x.Classification == classification);
 }
 
@@ -31,6 +35,7 @@ public sealed class Tp1Candidate
     public string? Source { get; init; }
     public string? Destination { get; init; }
     public string? DestinationType { get; init; }
+    public bool GenericFieldsFromRaw { get; init; }
     public int? HopCount { get; init; }
     public int? TpLength { get; init; }
     public int ParityErrors { get; init; }
@@ -82,11 +87,16 @@ public static class SessionReader
             byte[] bytes;
             try { bytes = Convert.FromHexString(hex); }
             catch (FormatException) { bytes = []; session.Diagnostics.Add(new Diagnostic(Path.Combine(directory, "tp1-candidates.jsonl"), line, "Invalid raw_hex; original text retained")); }
+            var classification = String(item, "classification") ?? "UNKNOWN";
+            var recordedSource = String(item, "source");
+            var recordedDestination = String(item, "destination");
+            var decoded = classification == "VALID_UNKNOWN" ? DecodeStandard(bytes) : null;
             session.Candidates.Add(new Tp1Candidate {
-                Line = line, Classification = String(item, "classification") ?? "UNKNOWN", MonotonicUs = Long(item, "monotonic_us"),
+                Line = line, Classification = classification, MonotonicUs = Long(item, "monotonic_us"),
                 DateTime = String(item, "date_time"), RawHex = hex, RawBytes = bytes,
-                Source = String(item, "source"), Destination = String(item, "destination"), DestinationType = String(item, "destination_type"),
-                HopCount = (int?)Long(item, "hop_count"), TpLength = (int?)Long(item, "tp_length"),
+                Source = recordedSource ?? decoded?.Source, Destination = recordedDestination ?? decoded?.Destination, DestinationType = String(item, "destination_type") ?? decoded?.DestinationType,
+                GenericFieldsFromRaw = decoded is not null && (recordedSource is null || recordedDestination is null),
+                HopCount = (int?)Long(item, "hop_count") ?? decoded?.HopCount, TpLength = (int?)Long(item, "tp_length") ?? decoded?.TpLength,
                 ParityErrors = (int)(Long(item, "parity_errors") ?? 0), TimingErrors = (int)(Long(item, "timing_errors") ?? 0),
                 Overflow = Bool(item, "overflow"), Original = item.Clone()
             });
@@ -97,6 +107,22 @@ public static class SessionReader
         return session;
     }
 
+    private sealed record GenericFields(string Source, string Destination, string DestinationType, int HopCount, int TpLength);
+    private static GenericFields? DecodeStandard(byte[] bytes)
+    {
+        if (bytes.Length < 8 || (bytes[0] & 0x80) == 0 || bytes.Length != 8 + (bytes[5] & 0x0F)) return null;
+        byte xor = 0;
+        foreach (var b in bytes) xor ^= b;
+        if (xor != 0xFF) return null;
+        var src = (bytes[1] << 8) | bytes[2];
+        var dst = (bytes[3] << 8) | bytes[4];
+        var source = $"{(src >> 12) & 15}.{(src >> 8) & 15}.{src & 255}";
+        var group = (bytes[5] & 0x80) != 0;
+        var destination = group
+            ? $"{(dst >> 11) & 31}/{(dst >> 8) & 7}/{dst & 255}"
+            : $"{(dst >> 12) & 15}.{(dst >> 8) & 15}.{dst & 255}";
+        return new GenericFields(source, destination, group ? "group" : "individual", (bytes[5] >> 4) & 7, bytes[5] & 15);
+    }
     private static void ReadJsonl(string path, Session session, Action<int, JsonElement> add)
     {
         if (!File.Exists(path)) return;
