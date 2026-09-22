@@ -1,7 +1,9 @@
 #include "acquisition.h"
 #include "analysis.h"
 #include "events.h"
+#include "hmi.h"
 #include "storage.h"
+#include "tp1_decoder.h"
 
 #include <esp_adc/adc_continuous.h>
 #include <esp_heap_caps.h>
@@ -12,7 +14,7 @@ namespace scope {
 namespace {
 
 constexpr uint32_t kFrameBytes = 1024;
-constexpr uint32_t kDriverPoolBytes = 32768;
+constexpr uint32_t kDriverPoolBytes = 49152;
 static_assert(SOC_ADC_DIGI_RESULT_BYTES == 4, "Expected ESP32-C6 ADC DMA format");
 static_assert(kPreSamples + kPostSamples == kRingSamples, "Capture must fit ring");
 
@@ -101,6 +103,7 @@ void reader(void *) {
         continue;
       }
       const uint16_t raw = sample->type2.data;
+      tp1::feed(raw, state.samples + blockSamples);
       state.latestRaw = raw;
       const uint32_t position = state.ringHead;
       ring[position] = raw;
@@ -235,6 +238,7 @@ bool start() {
     state.postCount = 0;
   }
   acquisitionStartMicros = micros();
+  tp1::reset();
   acquisitionStartSamples = state.samples;
   const esp_err_t result = adc_continuous_start(adcHandle);
   if (result != ESP_OK) {
@@ -314,6 +318,41 @@ bool waveform(Waveform &out) {
   out.captured = snapshot.captured;
   out.samples = count;
   out.triggerPosition = snapshot.captured ? kPreSamples : 0;
+  out.minRaw = UINT16_MAX;
+  out.maxRaw = 0;
+  for (uint32_t x = 0; x < kWaveColumns; ++x) {
+    uint16_t low = UINT16_MAX;
+    uint16_t high = 0;
+    const uint32_t first = x * count / kWaveColumns;
+    const uint32_t end = (x + 1) * count / kWaveColumns;
+    for (uint32_t i = first; i < end; ++i) {
+      const uint16_t raw = ring[(startIndex + i) % kRingSamples];
+      if (raw < low) low = raw;
+      if (raw > high) high = raw;
+    }
+    out.low[x] = low == UINT16_MAX ? 0 : low;
+    out.high[x] = high;
+    if (out.low[x] < out.minRaw) out.minRaw = out.low[x];
+    if (high > out.maxRaw) out.maxRaw = high;
+  }
+  return true;
+}
+
+bool liveWaveform(uint16_t windowMs, Waveform &out) {
+  if (!ring || windowMs < 5 || windowMs > 100) return false;
+  State snapshot;
+  portENTER_CRITICAL(&statsMux);
+  snapshot = state;
+  portEXIT_CRITICAL(&statsMux);
+  if (!snapshot.running || !snapshot.ringValid) return false;
+  const uint32_t rate = lastMeasuredHz ? lastMeasuredHz : kRequestedHz;
+  uint32_t count = (static_cast<uint64_t>(rate) * windowMs + 999) / 1000;
+  if (count > snapshot.ringValid) count = snapshot.ringValid;
+  if (count < kWaveColumns) return false;
+  const uint32_t startIndex = (snapshot.ringHead + kRingSamples - count) % kRingSamples;
+  out.captured = false;
+  out.samples = count;
+  out.triggerPosition = 0;
   out.minRaw = UINT16_MAX;
   out.maxRaw = 0;
   for (uint32_t x = 0; x < kWaveColumns; ++x) {
@@ -451,6 +490,7 @@ void pollSerial() {
   while (Serial.available()) {
     const char command = static_cast<char>(Serial.read());
     switch (command) {
+      case 'L': hmi::showScope(); break;
       case 'S': case 's':
         analysis::start();
         break;

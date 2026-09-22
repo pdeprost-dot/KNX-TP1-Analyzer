@@ -54,17 +54,27 @@ Aucun schéma de raccordement analogique au bus KNX n'est validé ou publié.
 
 ### État actuel
 
-**Validé sur carte réelle :** Waveshare ESP32-C6, USB/Serial, LCD, tactile, QMI8658A, Wi-Fi AP/STA, Web local, Dashboard, Scope, Events et Start/Stop. Sur GPIO5 isolé du bus KNX : ADC continu ESP-IDF + DMA à environ **83,33 kéchantillons/s**, ring de **50 000 échantillons / 100 Ko**, 70 % avant et 30 % après trigger, triggers montant, descendant et manuel. Les fronts GND/3V3 ont été testés physiquement. Le Dashboard LCD et son compteur Events ont été validés visuellement.
+**Validé sur carte réelle :** Waveshare ESP32-C6, USB/Serial, LCD, tactile, QMI8658A, Wi-Fi AP/STA, Web local, Dashboard, Scope, Events et Start/Stop. Lors des premiers essais, GPIO5 isolé du bus KNX : ADC continu ESP-IDF + DMA à environ **83,33 kéchantillons/s**, ring de **50 000 échantillons / 100 Ko**, 70 % avant et 30 % après trigger, triggers montant, descendant et manuel. Les fronts GND/3V3 ont été testés physiquement. Le Dashboard LCD et son compteur Events ont été validés visuellement.
 
 **Sessions + SD V1 :** START crée une session persistante et STOP la clôture. Le ring RAM conserve 24 métadonnées et une seule capture RAW complète ; la SD conserve l'historique des Events et de leurs RAW. Une session interrompue par reboot est marquée `INTERRUPTED` et ses captures finalisées restent lisibles. Une session de 50 captures manuelles a produit **50/50 fichiers RAW valides**, y compris la première capture sortie du ring RAM ; les 50 CRC et en-têtes ont été vérifiés. Une session fermée et une session interrompue sont restées accessibles après reboot.
 
 Le firmware corrigé a tenu **630 s** avec **28 captures manuelles persistées** : fréquence moyenne des captures **83 286 échantillons/s** (min/max **82 732 / 83 325**), **0 overrun ADC**, **0 erreur DMA**, **0 erreur SD**, **0 échec HTTP**, **0 redémarrage** et **0 capture perdue**. Les 28 RAW ont également passé les contrôles d'en-tête et de CRC. La heap finale était de **118 392 octets** ; minimum interne **83 204 octets**, plus petit grand bloc libre observé **90 100 octets**. Le firmware a écrit **2 822 502 octets** sur SD pendant ce test. Une connexion WebSocket a été rétablie après une erreur transitoire. Le volume monté de la carte de 16 Go ne représente qu'environ **126 Mio** ; aucune modification de partition ni formatage n'a été effectué.
 
-**Limites :** GPIO5 flottant ne produit que du bruit de test, jamais une mesure KNX. Aucun front-end analogique KNX protégé, mesure VBUS, TP-UART, décodage ou corrélation KNX n'est implémenté. L'application PC et les rapports restent futurs.
+**Décodeur TP1 expérimental :** GPIO5 reçoit maintenant le bus via un diviseur passif provisoire. Sur le bus réel, l'essai long a reconstruit **82 télégrammes à checksum correct** et **90 acquittements** dans un journal SD de **41 334 octets** relu avec CRC correct, à **83,3 kéchantillons/s**, sans overrun ADC ni erreur DMA/SD. Le [fonctionnement et ses limites](docs/tp1-experimental.md) sont documentés séparément.
+
+**Limites :** aucun front-end analogique KNX protégé, mesure VBUS, TP-UART ou décodage DPT n'est implémenté. Le journal TP1 est écrit progressivement sur SD avec un tampon RAM de 16 Kio et des points de synchronisation. L'application PC et les rapports restent futurs.
 
 ### Scope Web
 
 Ouvrir `/scope`, cliquer sur **START ANALYSIS**, puis **ARM MANUAL** et **MANUAL TRIGGER** après remplissage du prétrigger. La capture s'affiche automatiquement avec 50 000 échantillons, min/max, fréquence mesurée, source RAW et répartition 35 000 / 15 000. L'axe temporel est calculé depuis les métadonnées de la capture : environ −420 ms / t = 0 / +180 ms à 83,3 kéchantillons/s. Les boutons indisponibles indiquent la condition requise. **STOP ANALYSIS** clôture la session. Avec GPIO5 flottant, le tracé ne représente que l'entrée ADC de test.
+
+### LCD Live Scope V1
+
+Pendant l’analyse TP1, le moniteur texte prend automatiquement la place du Scope live pour préserver le décodage ADC.
+
+Sur l'écran **SCOPE**, le graphe LIVE lit une fenêtre récente du ring ADC et réduit chaque colonne à son **minimum et maximum**. Le buffer d'affichage contient 160 couples `uint16_t` (640 octets de données, 656 octets avec métadonnées) ; il ne duplique pas les 50 000 échantillons RAW. Le dessin est réparti en blocs de 16 colonnes pour laisser la priorité à l'ADC, aux Events, à la SD et au Web. Toucher la durée sous le graphe sélectionne **5, 10, 20, 50 ou 100 ms** ; toucher l'échelle bascule entre **FULL** (0–4095) et **AUTO**. Les valeurs sont **ADC RAW, sans calibration en volts**. Après un trigger, la capture figée reste consultable lorsque l'acquisition s'arrête.
+
+Sur carte réelle, le rendu stabilisé tourne à **8 FPS** ; le test simultané LCD + Web + ADC + SD de **603 s** a mesuré **83 357 échantillons/s** en moyenne, **0 overrun ADC**, **0 erreur DMA/SD/HTTP**, **0 timeout Web** et **0 redémarrage**. Cinq captures manuelles ont été demandées pendant ce test ; les sept RAW de la session, captures pilotes incluses, ont passé les contrôles d'en-tête, CRC et statistiques. Le front-end analogique KNX protégé reste absent : **ne jamais connecter directement le bus KNX TP1 à GPIO5**.
 
 ### Events et API locale
 
@@ -157,17 +167,27 @@ No analog KNX bus wiring diagram has been validated or published.
 
 ### Current status
 
-**Validated on real hardware:** Waveshare ESP32-C6, USB/Serial, LCD, touch, QMI8658A, Wi-Fi AP/STA, local Web UI, Dashboard, Scope, Events and Start/Stop. GPIO5 remains isolated from the KNX bus: ESP-IDF continuous ADC + DMA runs near **83.33 kSamples/s** with a **50,000-sample / 100 KB** ring, 70% before and 30% after the trigger, and rising, falling and manual triggers. GND/3V3 edges were tested physically. The LCD Dashboard and Events counter were visually validated.
+**Validated on real hardware:** Waveshare ESP32-C6, USB/Serial, LCD, touch, QMI8658A, Wi-Fi AP/STA, local Web UI, Dashboard, Scope, Events and Start/Stop. In the initial tests, GPIO5 was isolated from the KNX bus: ESP-IDF continuous ADC + DMA runs near **83.33 kSamples/s** with a **50,000-sample / 100 KB** ring, 70% before and 30% after the trigger, and rising, falling and manual triggers. GND/3V3 edges were tested physically. The LCD Dashboard and Events counter were visually validated.
 
 **Sessions + SD V1:** START creates a persistent session and STOP closes it. RAM retains 24 metadata records and one complete RAW capture; SD retains the Event and RAW history. A session interrupted by reboot is marked `INTERRUPTED` while finalized captures remain readable. One 50-manual-capture session produced **50/50 valid RAW files**, including its oldest capture after RAM rotation; all 50 headers and CRCs were checked. Both a closed and an interrupted session remained accessible after reboot.
 
 The corrected firmware completed **630 s** with **28 persisted manual captures**: average capture rate **83,286 samples/s** (min/max **82,732 / 83,325**), **0 ADC overruns**, **0 DMA errors**, **0 SD write errors**, **0 HTTP test failures**, **0 reboots**, and **0 lost captures**. All 28 RAW headers and CRCs were also verified. Final free heap was **118,392 bytes**; internal minimum **83,204 bytes**, lowest observed largest free block **90,100 bytes**. The firmware wrote **2,822,502 bytes** to SD in this test. One transient WebSocket error reconnected. The mounted volume on the 16 GB test card is only about **126 MiB**; no partitioning or formatting was performed.
 
-**Limits:** floating GPIO5 produces test noise, never a KNX measurement. The protected KNX analog front-end, VBUS measurement, TP-UART, KNX decoding and correlation are not implemented. The PC application and reports remain future work.
+**Experimental TP1 decoder:** GPIO5 now receives the bus through a provisional passive divider. The final real-bus test reconstructed **42 checksum-valid telegrams**, **46 acknowledgements** and **4 parity-error candidates** at **83.3 kSamples/s**, with no ADC overrun or DMA/SD error. See the [decoder scope and limits](docs/tp1-experimental.md).
+
+**Limits:** the protected KNX analog front-end, VBUS measurement, TP-UART and DPT decoding are not implemented. The TP1 journal is written progressively to SD through a 16 KiB RAM buffer with periodic checkpoints. The PC application and reports remain future work.
 
 ### Web Scope
 
 Open `/scope`, select **START ANALYSIS**, then **ARM MANUAL** and **MANUAL TRIGGER** once the pretrigger buffer is full. The capture appears automatically with 50,000 samples, min/max, measured rate, RAW source and the 35,000 / 15,000 split. The time axis uses capture metadata: roughly −420 ms / t = 0 / +180 ms at 83.3 kSamples/s. Disabled controls explain what is required. **STOP ANALYSIS** closes the session. With GPIO5 floating, the trace only shows the test ADC input.
+
+### LCD Live Scope V1
+
+During TP1 analysis, the text monitor automatically replaces Live Scope to preserve ADC decoding.
+
+On the **SCOPE** screen, LIVE reads a recent window from the ADC ring and reduces each display column to its **minimum and maximum**. The display buffer holds 160 `uint16_t` min/max pairs (640 data bytes, 656 bytes including metadata); it does not duplicate the 50,000 RAW samples. Drawing is split into 16-column chunks to give ADC, Events, SD and Web priority. Tap the duration below the graph to select **5, 10, 20, 50 or 100 ms**; tap the scale to switch between **FULL** (0–4095) and **AUTO**. Values are **uncalibrated ADC RAW**, not volts. After a trigger, the frozen capture remains available once acquisition stops.
+
+On real hardware, steady rendering runs at **8 FPS**; a **603 s** simultaneous LCD + Web + ADC + SD test measured **83,357 samples/s** on average, **0 ADC overruns**, **0 DMA/SD/HTTP errors**, **0 Web timeouts** and **0 reboots**. Five manual captures were requested during the test; all seven RAW files in the session, including pilot captures, passed header, CRC and sample-statistics checks. A protected KNX analog front-end is still absent: **never connect the KNX TP1 bus directly to GPIO5**.
 
 ### Events and local API
 

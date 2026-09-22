@@ -2,6 +2,8 @@
 #include "acquisition.h"
 #include "storage.h"
 #include "web_server.h"
+#include "tp1_decoder.h"
+#include "hmi.h"
 
 namespace analysis {
 namespace {
@@ -33,6 +35,7 @@ bool start() {
   }
   ++session;
   current = State::Running;
+  hmi::showScope();
   Serial.printf("{\"type\":\"ANALYSIS\",\"state\":\"RUNNING\",\"session\":%lu}\n", session);
   return true;
 }
@@ -42,11 +45,12 @@ bool stop() {
   if (current == State::Starting || current == State::Stopping) return false;
   current = State::Stopping;
   const bool adcOkay = scope::stop();
+  const bool tp1Okay = tp1::flush();
   const bool sdOkay = storage::stopSession(webui::errorCount());
   stoppedElapsedMs = millis() - startedMs;
-  current = adcOkay && sdOkay ? State::Stopped : State::Error;
+  current = adcOkay && sdOkay && tp1Okay ? State::Stopped : State::Error;
   Serial.printf("{\"type\":\"ANALYSIS\",\"state\":\"%s\",\"session\":%lu}\n", name(current), session);
-  return adcOkay && sdOkay;
+  return adcOkay && sdOkay && tp1Okay;
 }
 
 Status status() {

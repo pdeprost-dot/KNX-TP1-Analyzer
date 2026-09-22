@@ -9,6 +9,7 @@
 #include "hmi.h"
 #include "web_server.h"
 #include "storage.h"
+#include "tp1_decoder.h"
 
 static constexpr char kVersion[] = "0.5.0-sessions";
 static Arduino_DataBus *lcdBus = new Arduino_HWSPI(15, 14, 1, 2, 3);
@@ -119,6 +120,7 @@ void setup() {
     Serial.println("{\"type\":\"ADC_ERROR\",\"stage\":\"imu_interrupts_not_high_z\"}");
   }
   sdReady = storage::begin();
+  tp1::begin();
   network::begin();
   if (lcdReady) hmi::begin(lcd);
   webui::setSdReady(sdReady);
@@ -128,6 +130,7 @@ void setup() {
 void loop() {
   scope::service();
   storage::tick();
+  tp1::poll();
   scope::pollSerial();
   network::tick();
   webui::tick();

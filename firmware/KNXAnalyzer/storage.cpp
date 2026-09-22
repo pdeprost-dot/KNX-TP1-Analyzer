@@ -35,6 +35,15 @@ uint32_t lastCapacityMs = 0;
 events::Event pendingEvent = {};
 bool pending = false;
 File captureFile;
+File tp1File;
+uint32_t tp1Bytes = 0;
+uint32_t tp1Lines = 0;
+uint32_t tp1CommittedBytes = 0;
+uint32_t tp1Syncs = 0;
+uint32_t tp1MaxWriteUs = 0;
+uint32_t tp1MaxSyncUs = 0;
+uint32_t tp1Crc = 0xFFFFFFFFUL;
+bool tp1ReadbackOkay = false;
 uint32_t writeOffset = 0;
 uint32_t queuedAtMs = 0;
 uint32_t maxChunkUs = 0;
@@ -183,6 +192,42 @@ void finishJob(bool okay, const char *failure) {
   tempPath = "";
   finalPath = "";
 }
+struct JournalRecovery {
+  uint32_t bytes = 0, completeBytes = 0, validLines = 0, invalidLines = 0, tailBytes = 0;
+};
+JournalRecovery inspectTp1Journal(const String &id) {
+  JournalRecovery result;
+  File file = SD.open(sessionDir(id) + "/tp1-candidates.jsonl", FILE_READ);
+  if (!file) return result;
+  char line[512];
+  size_t length = 0;
+  bool oversized = false;
+  while (file.available()) {
+    const int value = file.read();
+    if (value < 0) break;
+    ++result.bytes;
+    if (value == '\n') {
+      if (!oversized && length) {
+        line[length] = 0;
+        JsonDocument record;
+        if (!deserializeJson(record, line) &&
+            String(record["type"] | "") == "TP1_CANDIDATE" &&
+            !record["monotonic_us"].isNull() &&
+            !record["classification"].isNull() &&
+            !record["raw_hex"].isNull()) {
+          ++result.validLines;
+          result.completeBytes = result.bytes;
+        } else ++result.invalidLines;
+      } else ++result.invalidLines;
+      length = 0;
+      oversized = false;
+    } else if (length < sizeof(line) - 1) line[length++] = static_cast<char>(value);
+    else oversized = true;
+  }
+  result.tailBytes = length || oversized ? result.bytes - result.completeBytes : 0;
+  file.close();
+  return result;
+}
 void recoverSessions() {
   if (!SD.exists(kSessions)) return;
   File root = SD.open(kSessions);
@@ -199,12 +244,19 @@ void recoverSessions() {
         if (!SD.exists(path) && SD.exists(backup)) SD.rename(backup, path);
         JsonDocument doc;
         if (readSession(id, doc) && String(doc["state"] | "") == "RUNNING") {
+          const JournalRecovery journal = inspectTp1Journal(id);
           doc["state"] = "INTERRUPTED";
           doc["end_uptime_ms"] = nullptr;
           doc["duration_ms"] = nullptr;
           doc["event_count"] = countLines(eventsPath(id));
+          doc["tp1_journal_bytes"] = journal.bytes;
+          doc["tp1_complete_bytes"] = journal.completeBytes;
+          doc["tp1_valid_lines"] = journal.validLines;
+          doc["tp1_invalid_lines"] = journal.invalidLines;
+          doc["tp1_tail_bytes"] = journal.tailBytes;
           writeDocumentAtomic(path, doc);
-          Serial.printf("{\"type\":\"SESSION_RECOVERED\",\"session_id\":\"%s\",\"state\":\"INTERRUPTED\"}\n", id.c_str());
+          Serial.printf("{\"type\":\"SESSION_RECOVERED\",\"session_id\":\"%s\",\"state\":\"INTERRUPTED\",\"journal_bytes\":%lu,\"complete_bytes\":%lu,\"valid_lines\":%lu,\"invalid_lines\":%lu,\"tail_bytes\":%lu}\n",
+              id.c_str(), journal.bytes, journal.completeBytes, journal.validLines, journal.invalidLines, journal.tailBytes);
         }
       }
     }
@@ -278,13 +330,20 @@ bool startSession(uint32_t httpErrors) {
   sessionPersisted = 0;
   sessionFailed = 0;
   sessionLastRate = 0;
+  tp1Bytes = tp1Lines = tp1CommittedBytes = tp1Syncs = 0;
+  tp1MaxWriteUs = tp1MaxSyncUs = 0;
+  tp1Crc = 0xFFFFFFFFUL;
+  tp1ReadbackOkay = false;
   if (!writeActiveSession("RUNNING", false, 0)) { activeId[0] = 0; return false; }
+  tp1File = SD.open(sessionDir(activeId) + "/tp1-candidates.jsonl", FILE_APPEND);
+  if (!tp1File) { error("open_tp1_jsonl"); activeId[0] = 0; return false; }
   Serial.printf("{\"type\":\"SESSION_START\",\"session_id\":\"%s\"}\n", activeId);
   return true;
 }
 bool stopSession(uint32_t httpErrors) {
   if (!activeId[0]) return true;
   flush();
+  if (tp1File) finishTp1Journal();
   sessionHttpErrors = httpErrors;
   const bool okay = writeActiveSession("CLOSED", true, millis());
   strlcpy(lastId, activeId, sizeof(lastId));
@@ -308,6 +367,63 @@ bool queueEvent(const events::Event &event) {
   maxChunkUs = 0;
   crc = 0xFFFFFFFFUL;
   return true;
+}
+bool appendTp1Chunk(const char *data, size_t length) {
+  if (!mounted || !activeId[0] || !data || !length || length > 512) return false;
+  if (!tp1File) {
+    tp1File = SD.open(sessionDir(activeId) + "/tp1-candidates.jsonl", FILE_APPEND);
+    if (!tp1File) { error("open_tp1_jsonl"); return false; }
+  }
+  const uint32_t began = micros();
+  const bool okay = tp1File.write(reinterpret_cast<const uint8_t *>(data), length) == length;
+  const uint32_t elapsed = micros() - began;
+  if (elapsed > tp1MaxWriteUs) tp1MaxWriteUs = elapsed;
+  if (!okay) { error("write_tp1_jsonl"); return false; }
+  tp1Bytes += length;
+  bytesWritten += length;
+  tp1Crc = crcStep(tp1Crc, reinterpret_cast<const uint8_t *>(data), length);
+  for (size_t i = 0; i < length; ++i) if (data[i] == '\n') ++tp1Lines;
+  return true;
+}
+bool syncTp1Journal() {
+  if (!tp1File) return true;
+  const uint32_t began = micros();
+  tp1File.flush();
+  const uint32_t elapsed = micros() - began;
+  if (elapsed > tp1MaxSyncUs) tp1MaxSyncUs = elapsed;
+  if (!tp1File) { error("sync_tp1_jsonl"); return false; }
+  tp1CommittedBytes = tp1Bytes;
+  ++tp1Syncs;
+  return true;
+}
+bool finishTp1Journal() {
+  if (!mounted || !activeId[0]) return false;
+  if (tp1File) {
+    if (!syncTp1Journal()) return false;
+    tp1File.close();
+  }
+  if (!tp1Bytes) { tp1ReadbackOkay = true; return true; }
+  File file = SD.open(sessionDir(activeId) + "/tp1-candidates.jsonl", FILE_READ);
+  if (!file) { error("verify_tp1_open"); return false; }
+  uint8_t buffer[512];
+  uint32_t readBytes = 0, readLines = 0, readCrc = 0xFFFFFFFFUL;
+  while (file.available()) {
+    const int n = file.read(buffer, sizeof(buffer));
+    if (n <= 0) break;
+    readBytes += n;
+    readCrc = crcStep(readCrc, buffer, n);
+    for (int i = 0; i < n; ++i) if (buffer[i] == '\n') ++readLines;
+  }
+  file.close();
+  tp1ReadbackOkay = readBytes == tp1Bytes && readLines == tp1Lines && readCrc == tp1Crc;
+  Serial.printf("{\"type\":\"TP1_SD_VERIFY\",\"bytes\":%lu,\"lines\":%lu,\"read_bytes\":%lu,\"read_lines\":%lu,\"crc_ok\":%s,\"syncs\":%lu,\"max_write_us\":%lu,\"max_sync_us\":%lu}\n",
+      tp1Bytes, tp1Lines, readBytes, readLines, readCrc == tp1Crc ? "true" : "false",
+      tp1Syncs, tp1MaxWriteUs, tp1MaxSyncUs);
+  if (!tp1ReadbackOkay) error("verify_tp1_jsonl");
+  return tp1ReadbackOkay;
+}
+Tp1JournalStatus tp1JournalStatus() {
+  return {tp1Bytes, tp1Lines, tp1CommittedBytes, tp1Syncs, tp1MaxWriteUs, tp1MaxSyncUs, tp1ReadbackOkay};
 }
 void tick() {
   if (!mounted) return;

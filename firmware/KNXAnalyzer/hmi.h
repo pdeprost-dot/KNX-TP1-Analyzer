@@ -6,4 +6,5 @@ namespace hmi {
 void begin(Arduino_GFX *display);
 void tick();
 void refresh();
+void showScope();
 }
