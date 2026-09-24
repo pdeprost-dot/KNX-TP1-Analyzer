@@ -167,6 +167,11 @@ No analog KNX bus wiring diagram has been validated or published.
 
 ### Current status
 
+The validated **Event RAW Logger V2** is documented in
+[`docs/event-raw-v2.md`](docs/event-raw-v2.md): continuous 83.3 kS/s ADC,
+experimental D44 trigger, 100 ms PRE/POST, 12 x 8 KiB chunk pool, selective RAW
+storage, robust finalization, and experimentally validated SD R1 recovery.
+
 **Validated on real hardware:** Waveshare ESP32-C6, USB/Serial, LCD, touch, QMI8658A, Wi-Fi AP/STA, local Web UI, Dashboard, Scope, Events and Start/Stop. In the initial tests, GPIO5 was isolated from the KNX bus: ESP-IDF continuous ADC + DMA runs near **83.33 kSamples/s** with a **50,000-sample / 100 KB** ring, 70% before and 30% after the trigger, and rising, falling and manual triggers. GND/3V3 edges were tested physically. The LCD Dashboard and Events counter were visually validated.
 
 **Sessions + SD V1:** START creates a persistent session and STOP closes it. RAM retains 24 metadata records and one complete RAW capture; SD retains the Event and RAW history. A session interrupted by reboot is marked `INTERRUPTED` while finalized captures remain readable. One 50-manual-capture session produced **50/50 valid RAW files**, including its oldest capture after RAM rotation; all 50 headers and CRCs were checked. Both a closed and an interrupted session remained accessible after reboot.
