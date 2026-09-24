@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Text.Json;
@@ -19,6 +20,7 @@ public partial class MainViewModel : ViewModelBase
     public ObservableCollection<OfflineTp1Candidate> OfflineCandidates { get; } = [];
     public string[] Filters { get; } = ["All", "Valid", "Errors", "ACK", "Unknown"];
     public string[] AnalogSortOptions { get; } = ["P-P descending", "P-P ascending", "Event ID"];
+    public IReadOnlyList<Tp1AnalogDecodeProfile> OfflineProfiles { get; } = Tp1AnalogDecodeProfile.Available;
     public string[] InteractionSortOptions { get; } = ["Occurrences", "Sessions", "Délai médian"];
     [ObservableProperty] private string folderPath = "";
     [ObservableProperty] private string status = "Open an SD root, sessions folder, or one session folder.";
@@ -48,6 +50,8 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty] private string groupValues = "—";
     [ObservableProperty] private string groupInteractions = "Aucun motif récurrent affichable.";
     [ObservableProperty] private string selectedInteractionSort = "Occurrences";
+    [ObservableProperty] private Tp1AnalogDecodeProfile selectedOfflineProfile = Tp1AnalogDecodeProfile.Historical;
+    [ObservableProperty] private string offlineProfileComparison = "—";
     [ObservableProperty] private string offlineAnalysisSummary = "Sélectionnez une capture analogique.";
     [ObservableProperty] private int offlineSampleCount;
     [ObservableProperty] private string offlineDuration = "—";
@@ -215,21 +219,9 @@ public partial class MainViewModel : ViewModelBase
         if (!value.RawPersisted) return;
         var path = System.IO.Path.Combine(SelectedSession.DirectoryPath, "captures", $"event-{value.EventId:D6}.bin");
         try {
-            var raw = RawCapture.Read(path);
+            var raw = value.EventRawV2 ? EventRawV2Reader.ReadCapture(SelectedSession.DirectoryPath, value.EventId) : RawCapture.Read(path);
             SelectedCapture = raw;
-            var offline = OfflineRawAnalyzer.Analyze(raw);
-            foreach (var candidate in offline.Tp1Candidates) OfflineCandidates.Add(candidate);
-            SelectedOfflineCandidate = OfflineCandidates.FirstOrDefault(x => x.Classification == OfflineAnalogClassification.TP1_VALID_FRAME)
-                ?? OfflineCandidates.FirstOrDefault();
-            OfflineAnalysisSummary = $"Analyse dérivée directement des échantillons ADC RAW · classification {offline.Classification}";
-            OfflineSampleCount = offline.SampleCount;
-            OfflineDuration = $"{offline.DurationMilliseconds:F3} ms";
-            OfflineBaseline = $"{offline.Baseline:F2} RAW";
-            OfflineNoiseRms = $"{offline.NoiseRms:F2} RAW";
-            OfflineActivity = offline.Classification == OfflineAnalogClassification.NO_SIGNAL ? "Aucune" : "Détectée";
-            OfflinePulseCount = offline.PulseCandidates.Count;
-            OfflineCandidateCount = offline.Tp1Candidates.Count;
-            OfflineValidFrameCount = offline.ValidFrameCount;
+            ApplyOfflineAnalysis(raw);
             AnalogVariationNotice = raw.PeakToPeak <= 2 ? "No analog variation in this capture" : "";
             AnalogAxis = raw.SampleRateHz == 0 ? "Time axis unavailable (sample rate 0)" : $"Time: {-1000.0 * raw.TriggerIndex / raw.SampleRateHz:F1} ms     trigger t=0     +{1000.0 * (raw.Samples.Length - raw.TriggerIndex) / raw.SampleRateHz:F1} ms";
             var pipeline = AnalogVoltagePipeline.FromSessionMetadata(SelectedSession.Metadata);
@@ -247,6 +239,34 @@ public partial class MainViewModel : ViewModelBase
             }
             AnalogDetails = $"RAW at GPIO5: {raw.Samples.Length} samples | {raw.SampleRateHz} Hz | min {raw.Minimum} | max {raw.Maximum} | P-P {raw.PeakToPeak} | mean {raw.Mean:F2} | CRC {(raw.CrcValid ? "OK" : "INVALID")} | trigger index {raw.TriggerIndex}\n{voltage}\n\n" + AnalogDetails;
         } catch (Exception e) { AnalogDetails = $"RAW unavailable: {e.Message}\n\n" + AnalogDetails; }
+    }
+    partial void OnSelectedOfflineProfileChanged(Tp1AnalogDecodeProfile value)
+    {
+        if (SelectedCapture is not null) ApplyOfflineAnalysis(SelectedCapture);
+    }
+
+    private void ApplyOfflineAnalysis(RawCapture raw)
+    {
+        var offline = OfflineRawAnalyzer.Analyze(raw, SelectedOfflineProfile);
+        OfflineCandidates.Clear();
+        foreach (var candidate in offline.Tp1Candidates) OfflineCandidates.Add(candidate);
+        SelectedOfflineCandidate = OfflineCandidates.FirstOrDefault(x => x.Classification == OfflineAnalogClassification.TP1_VALID_FRAME)
+            ?? OfflineCandidates.FirstOrDefault();
+        var experimental = offline.Profile.Experimental ? " · Experimental / field candidate" : "";
+        OfflineAnalysisSummary = $"Profil actif : {offline.Profile.DisplayName} · seuils {offline.Profile.LowThreshold}/{offline.Profile.HighThreshold} RAW{experimental} · classification {offline.Classification}";
+        OfflineSampleCount = offline.SampleCount;
+        OfflineDuration = $"{offline.DurationMilliseconds:F3} ms";
+        OfflineBaseline = $"{offline.Baseline:F2} RAW";
+        OfflineNoiseRms = $"{offline.NoiseRms:F2} RAW";
+        OfflineActivity = offline.Classification == OfflineAnalogClassification.NO_SIGNAL ? "Aucune" : "Détectée";
+        OfflinePulseCount = offline.PulseCandidates.Count;
+        OfflineCandidateCount = offline.Tp1Candidates.Count;
+        OfflineValidFrameCount = offline.ValidFrameCount;
+        var comparison = OfflineRawAnalyzer.CompareProfiles(raw);
+        OfflineProfileComparison = string.Join(Environment.NewLine,
+            $"Historical : {comparison.Historical.Tp1Candidates.Count} trames · parité OK {comparison.Historical.Tp1Candidates.Count - comparison.Historical.ParityErrorCount} · erreurs parité {comparison.Historical.ParityErrorCount} · checksum {comparison.Historical.ChecksumErrorCount} · timing {comparison.Historical.TimingErrorCount}",
+            $"Field candidate : {comparison.FieldCandidate.Tp1Candidates.Count} trames · parité OK {comparison.FieldCandidate.Tp1Candidates.Count - comparison.FieldCandidate.ParityErrorCount} · erreurs parité {comparison.FieldCandidate.ParityErrorCount} · checksum {comparison.FieldCandidate.ChecksumErrorCount} · timing {comparison.FieldCandidate.TimingErrorCount}",
+            $"Octets identiques : {(comparison.ByteStreamsIdentical ? "oui" : "non — différences détectées")}");
     }
     partial void OnSelectedOfflineCandidateChanged(OfflineTp1Candidate? value)
     {

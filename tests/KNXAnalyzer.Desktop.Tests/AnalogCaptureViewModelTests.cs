@@ -1,4 +1,4 @@
-﻿using System.Buffers.Binary;
+using System.Buffers.Binary;
 using KNXAnalyzer.Desktop.ViewModels;
 
 namespace KNXAnalyzer.Desktop.Tests;
@@ -28,6 +28,9 @@ public class AnalogCaptureViewModelTests
             Assert.Equal(4, vm.OfflineSampleCount);
             Assert.StartsWith("4", vm.OfflineDuration);
             Assert.Equal(0, vm.OfflineValidFrameCount);
+            Assert.Equal("historical", vm.SelectedOfflineProfile.Id);
+            vm.SelectedOfflineProfile = KNXAnalyzer.Core.Tp1AnalogDecodeProfile.FieldCandidate;
+            Assert.Contains("Experimental / field candidate", vm.OfflineAnalysisSummary);
             vm.SelectedAnalogSort = "P-P ascending";
             Assert.Equal([3u, 2u], vm.AnalogEvents.Select(x => x.EventId));
             vm.SelectedSession = vm.Sessions.Single(x => x.Id == "s-a");

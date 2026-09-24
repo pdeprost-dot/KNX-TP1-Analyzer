@@ -56,6 +56,7 @@ public sealed class AnalogEvent
 {
     public uint EventId { get; init; }
     public bool RawPersisted { get; init; }
+    public bool EventRawV2 { get; init; }
     public JsonElement Original { get; init; }
     public RawCaptureSummary? CaptureSummary { get; set; }
     public string MinimumText => CaptureSummary?.Minimum.ToString() ?? "—";
@@ -71,6 +72,7 @@ public static class SessionReader
     public static IReadOnlyList<Session> OpenFolder(string folder)
     {
         var root = Path.GetFullPath(folder);
+        if (EventRawV2Reader.IsDataset(root)) return [EventRawV2Reader.OpenSession(root)];
         var candidates = new[] { Path.Combine(root, "knx-analyzer", "sessions"), Path.Combine(root, "sessions"), root };
         var sessionsRoot = candidates.FirstOrDefault(Directory.Exists) ?? throw new DirectoryNotFoundException(root);
         if (File.Exists(Path.Combine(sessionsRoot, "session.json"))) return [OpenSession(sessionsRoot)];
