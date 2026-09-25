@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Text.Json;
+using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using KNXAnalyzer.Core;
 
@@ -10,6 +11,7 @@ namespace KNXAnalyzer.Desktop.ViewModels;
 
 public partial class MainViewModel : ViewModelBase
 {
+    private NetworkImportService? networkImport;
     public ObservableCollection<Session> Sessions { get; } = [];
     public ObservableCollection<Tp1Candidate> VisibleCandidates { get; } = [];
     public ObservableCollection<AnalogEvent> AnalogEvents { get; } = [];
@@ -23,6 +25,9 @@ public partial class MainViewModel : ViewModelBase
     public IReadOnlyList<Tp1AnalogDecodeProfile> OfflineProfiles { get; } = Tp1AnalogDecodeProfile.Available;
     public string[] InteractionSortOptions { get; } = ["Occurrences", "Sessions", "Délai médian"];
     [ObservableProperty] private string folderPath = "";
+    [ObservableProperty] private string networkHost = NetworkImportService.RememberedAnalyzer;
+    [ObservableProperty] private string networkAnalyzer = "No network Analyzer connected.";
+    [ObservableProperty] private string networkProgress = "";
     [ObservableProperty] private string status = "Open an SD root, sessions folder, or one session folder.";
     [ObservableProperty] private Session? selectedSession;
     [ObservableProperty] private Tp1Candidate? selectedCandidate;
@@ -80,6 +85,20 @@ public partial class MainViewModel : ViewModelBase
             SelectedSession = Sessions.FirstOrDefault();
             Status = $"{Sessions.Count} session(s) found. Original files are read only.";
         } catch (Exception e) { Status = e.Message; }
+    }
+    public async Task OpenNetworkAsync()
+    {
+        try {
+            Status = "Network: discovery / Analyzer API..."; NetworkProgress = "metadata";
+            networkImport?.Dispose(); networkImport = new NetworkImportService(NetworkHost);
+            var analyzer = await networkImport.ConnectAsync();
+            NetworkAnalyzer = $"{analyzer.Hostname} · {analyzer.AnalyzerId} · {analyzer.Ip} · RSSI {analyzer.Rssi} dBm · {analyzer.FirmwareVersion} · {analyzer.State} · SD {(analyzer.SdReady ? "READY" : "ERROR")}";
+            var remote = await networkImport.ListSessionsAsync(); Sessions.Clear();
+            var progress = new Progress<NetworkImportProgress>(x => NetworkProgress = x.FromCache ? $"cache · {x.Downloaded} bytes" : x.Total is long total ? $"{x.Stage} · {x.Downloaded}/{total}" : x.Stage);
+            foreach (var descriptor in remote) Sessions.Add(await networkImport.ImportMetadataAsync(descriptor, progress));
+            FolderPath = $"NETWORK {networkImport.BaseUri}"; RefreshTrafficAnalysis(); SelectedSession = Sessions.FirstOrDefault();
+            NetworkProgress = "metadata ready"; Status = $"{Sessions.Count} network session(s). RAW will be fetched on demand.";
+        } catch (Exception e) { Status = $"Network import: {e.Message}"; NetworkProgress = "error"; }
     }
     private void RefreshTrafficAnalysis()
     {
@@ -217,6 +236,7 @@ public partial class MainViewModel : ViewModelBase
         if (value is null || SelectedSession is null) { AnalogDetails = "Select an analog event."; return; }
         AnalogDetails = JsonSerializer.Serialize(value.Original, new JsonSerializerOptions { WriteIndented = true });
         if (!value.RawPersisted) return;
+        if (SelectedSession.Network is not null && networkImport is not null) { _ = LoadNetworkCaptureAsync(SelectedSession, value); return; }
         var path = System.IO.Path.Combine(SelectedSession.DirectoryPath, "captures", $"event-{value.EventId:D6}.bin");
         try {
             var raw = value.EventRawV2 ? EventRawV2Reader.ReadCapture(SelectedSession.DirectoryPath, value.EventId) : RawCapture.Read(path);
@@ -239,6 +259,19 @@ public partial class MainViewModel : ViewModelBase
             }
             AnalogDetails = $"RAW at GPIO5: {raw.Samples.Length} samples | {raw.SampleRateHz} Hz | min {raw.Minimum} | max {raw.Maximum} | P-P {raw.PeakToPeak} | mean {raw.Mean:F2} | CRC {(raw.CrcValid ? "OK" : "INVALID")} | trigger index {raw.TriggerIndex}\n{voltage}\n\n" + AnalogDetails;
         } catch (Exception e) { AnalogDetails = $"RAW unavailable: {e.Message}\n\n" + AnalogDetails; }
+    }
+    private async Task LoadNetworkCaptureAsync(Session session, AnalogEvent value)
+    {
+        try {
+            NetworkProgress = "RAW requested"; Status = $"Downloading RAW for event {value.EventId}...";
+            var progress = new Progress<NetworkImportProgress>(x => NetworkProgress = x.FromCache ? $"cache · {x.Downloaded} bytes" : x.Total is long total ? $"{x.Stage} · {x.Downloaded}/{total}" : x.Stage);
+            var raw = await networkImport!.FetchEventAsync(session, value.EventId, progress);
+            if (!ReferenceEquals(SelectedSession, session) || SelectedAnalogEvent?.EventId != value.EventId) return;
+            value.CaptureSummary = raw.Summary; SelectedCapture = raw; ApplyOfflineAnalysis(raw);
+            AnalogVariationNotice = raw.PeakToPeak <= 2 ? "No analog variation in this capture" : "";
+            AnalogAxis = raw.SampleRateHz == 0 ? "Time axis unavailable (sample rate 0)" : $"Time: {-1000.0 * raw.TriggerIndex / raw.SampleRateHz:F1} ms     trigger t=0     +{1000.0 * (raw.Samples.Length - raw.TriggerIndex) / raw.SampleRateHz:F1} ms";
+            NetworkProgress = "verification · CRC OK · decode"; Status = $"Event {value.EventId}: network RAW verified and decoded.";
+        } catch (Exception e) { NetworkProgress = "error · retry available"; Status = $"Network RAW: {e.Message}"; AnalogDetails = $"RAW unavailable: {e.Message}\n\n" + AnalogDetails; }
     }
     partial void OnSelectedOfflineProfileChanged(Tp1AnalogDecodeProfile value)
     {

@@ -8,7 +8,7 @@ public static class EventRawV2Reader
     public const uint SampleRateHz = 83333;
 
     public static bool IsDataset(string directory) =>
-        File.Exists(Path.Combine(directory, "raw.bin")) &&
+        (File.Exists(Path.Combine(directory, "raw.bin")) || File.Exists(Path.Combine(directory, "segments.jsonl"))) &&
         File.Exists(Path.Combine(directory, "chunks.jsonl")) &&
         File.Exists(Path.Combine(directory, "events.jsonl"));
 
@@ -24,7 +24,10 @@ public static class EventRawV2Reader
             using var doc = JsonDocument.Parse(File.ReadAllText(metadataPath));
             metadata = doc.RootElement.Clone();
             state = metadata.TryGetProperty("closed", out var closed) && closed.ValueKind == JsonValueKind.True ? "CLOSED" : "INTERRUPTED";
-            if (metadata.TryGetProperty("duration_us", out var duration) && duration.TryGetInt64(out var us)) durationMs = us / 1000;
+            if (metadata.TryGetProperty("duration_us", out var duration)) {
+                if (duration.TryGetInt64(out var us)) durationMs = us / 1000;
+                else if (duration.ValueKind == JsonValueKind.String && long.TryParse(duration.GetString(), out us)) durationMs = us / 1000;
+            }
         }
         var session = new Session {
             DirectoryPath = full, Id = Path.GetFileName(full), State = state,
@@ -36,14 +39,13 @@ public static class EventRawV2Reader
             if (string.IsNullOrWhiteSpace(text)) continue;
             using var doc = JsonDocument.Parse(text);
             var item = doc.RootElement;
-            var eventId = item.GetProperty("event_id").GetUInt32();
+            var idValue = item.GetProperty("event_id");
+            var eventId = idValue.ValueKind == JsonValueKind.String ? uint.Parse(idValue.GetString()!) : idValue.GetUInt32();
             var analog = new AnalogEvent {
                 EventId = eventId, RawPersisted = true, EventRawV2 = true, Original = item.Clone()
             };
-            try { analog.CaptureSummary = ReadCapture(full, eventId).Summary; }
-            catch (Exception e) when (e is IOException or InvalidDataException or JsonException) {
-                session.Diagnostics.Add(new Diagnostic(Path.Combine(full, "raw.bin"), line, e.Message));
-            }
+            if (File.Exists(Path.Combine(full, "raw.bin"))) try { analog.CaptureSummary = ReadCapture(full, eventId).Summary; }
+            catch (Exception e) when (e is IOException or InvalidDataException or JsonException) { session.Diagnostics.Add(new Diagnostic(Path.Combine(full, "raw.bin"), line, e.Message)); }
             session.AnalogEvents.Add(analog);
         }
         return session;

@@ -1,9 +1,11 @@
 <Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:KNXAnalyzer.Desktop.ViewModels" xmlns:views="using:KNXAnalyzer.Desktop.Views" x:Class="KNXAnalyzer.Desktop.Views.MainWindow"
         x:DataType="vm:MainViewModel" Title="KNX TP1 Analyzer Studio" Width="1400" Height="850" MinWidth="950" MinHeight="600">
-  <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="12" RowSpacing="8">
+  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" Margin="12" RowSpacing="8">
     <DockPanel Grid.Row="0" LastChildFill="True">
       <Button DockPanel.Dock="Right" Content="Open SD / Sessions Folder" Click="OpenClicked" Margin="8,0,0,0" />
+      <Button DockPanel.Dock="Right" Content="Network" Click="NetworkClicked" Margin="8,0,0,0" />
+      <TextBox DockPanel.Dock="Right" Width="220" Text="{Binding NetworkHost}" PlaceholderText="Analyzer hostname / IP" />
       <Button DockPanel.Dock="Right" Content="Générer lot complet" Click="BatchClicked" Margin="8,0,0,0" />
       <Button DockPanel.Dock="Right" Content="Export JSON" Click="ExportJsonClicked" Margin="8,0,0,0" />
       <Button DockPanel.Dock="Right" Content="Générer rapport" Click="ReportClicked" Margin="8,0,0,0" />
@@ -12,8 +14,9 @@
       </ComboBox>
       <TextBox Text="{Binding FolderPath}" PlaceholderText="SD root or sessions folder" KeyDown="PathKeyDown" />
     </DockPanel>
-    <TextBlock Grid.Row="1" Text="{Binding Status}" TextWrapping="Wrap" />
-    <Grid Grid.Row="2" ColumnDefinitions="270,6,*">
+    <StackPanel Grid.Row="1"><TextBlock Text="{Binding NetworkAnalyzer}" TextWrapping="Wrap"/><TextBlock Text="{Binding NetworkProgress}" Opacity="0.7"/></StackPanel>
+    <TextBlock Grid.Row="2" Text="{Binding Status}" TextWrapping="Wrap" />
+    <Grid Grid.Row="3" ColumnDefinitions="270,6,*">
       <Grid Grid.Column="0" RowDefinitions="Auto,*" RowSpacing="6">
         <TextBlock Text="Sessions" FontWeight="Bold" />
         <ListBox Grid.Row="1" ItemsSource="{Binding Sessions}" SelectedItem="{Binding SelectedSession}">
@@ -241,6 +244,6 @@
         </TabControl>
       </Grid>
     </Grid>
-    <TextBlock Grid.Row="3" Text="Read only • TP1 timestamps are device uptime when date_time is null • VALID_UNKNOWN is a valid frame" Opacity="0.7"/>
+    <TextBlock Grid.Row="4" Text="Read only • TP1 timestamps are device uptime when date_time is null • VALID_UNKNOWN is a valid frame" Opacity="0.7"/>
   </Grid>
 </Window>

@@ -14,6 +14,7 @@ public sealed class Session
     public long? DurationMs { get; init; }
     public int EventCount { get; init; }
     public JsonElement Metadata { get; init; }
+    public NetworkSessionContext? Network { get; set; }
     public List<Tp1Candidate> Candidates { get; } = [];
     public List<AnalogEvent> AnalogEvents { get; } = [];
     public List<Diagnostic> Diagnostics { get; } = [];
