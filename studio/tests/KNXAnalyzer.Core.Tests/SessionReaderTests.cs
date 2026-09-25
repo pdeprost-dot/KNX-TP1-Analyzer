@@ -6,6 +6,46 @@ namespace KNXAnalyzer.Core.Tests;
 public class SessionReaderTests
 {
     [Fact]
+    public void OpensSegmentedFieldSessionFromMetadataAndReadsOnlySelectedEventChunks()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "knxstudio-segmented-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try {
+            File.WriteAllText(Path.Combine(folder, "session-start.json"), """{"schema_version":"knx-long-session-1.0","analyzer_id":"analyzer-test","session_id":"session-test"}""");
+            File.WriteAllText(Path.Combine(folder, "test-result.json"), """{"closed":true,"duration_us":"7200000000","raw_bytes":"8"}""");
+            File.WriteAllText(Path.Combine(folder, "events.jsonl"), """{"record_type":"EVENT","event_id":"7","sample_start":"101","sample_trigger":"102","sample_end":"103","trigger_timestamp_us":"3600123456","trigger_source":1}""" + Environment.NewLine);
+            var bytes = new byte[8];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(0), 999);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(2), 1000);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(4), 1100);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(6), 1200);
+            var crc = NetworkImportService.Crc32(bytes);
+            File.WriteAllText(Path.Combine(folder, "chunks.jsonl"), $"{{\"sample_start\":\"100\",\"sample_end\":\"104\",\"sample_count\":4,\"segment_index\":0,\"segment_offset\":\"0\",\"raw_bytes\":8,\"crc32\":\"{crc:X8}\"}}" + Environment.NewLine);
+
+            var session = EventRawV2Reader.OpenSession(folder);
+            Assert.Equal("session-test", session.Id);
+            Assert.Equal("LOCAL / SD · analyzer-test", session.Analyzer);
+            Assert.Equal("CLOSED", session.State);
+            Assert.Equal(7_200_000, session.DurationMs);
+            Assert.Equal(8, session.RawAvailableBytes);
+            var item = Assert.Single(session.AnalogEvents);
+            Assert.Equal("01:00:00.123", item.PositionText);
+            Assert.Equal("D44", item.Kind);
+            Assert.Equal("2 samples", item.WindowText);
+            Assert.Null(item.CaptureSummary);
+
+            File.WriteAllText(Path.Combine(folder, "test-result.json"), """{"closed":true,"duration_us":7200000000,"raw_bytes":"8"}""");
+            Assert.Equal(7_200_000, EventRawV2Reader.OpenSession(folder).DurationMs);
+
+            File.WriteAllBytes(Path.Combine(folder, "raw-0000.bin"), bytes);
+            var capture = EventRawV2Reader.ReadCapture(folder, 7);
+            Assert.Equal(new ushort[] { 1000, 1100 }, capture.Samples);
+            Assert.Equal((uint)1, capture.TriggerIndex);
+            Assert.True(capture.CrcValid);
+        } finally { Directory.Delete(folder, true); }
+    }
+
+    [Fact]
     public void ReadsRealFirmwareFieldNamesAndSurvivesFutureAndCorruptLines()
     {
         var root = Path.Combine(Path.GetTempPath(), "knxstudio-test-" + Guid.NewGuid().ToString("N"));

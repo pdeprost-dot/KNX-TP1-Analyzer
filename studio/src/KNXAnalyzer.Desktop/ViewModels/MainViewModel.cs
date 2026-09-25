@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -72,6 +73,7 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty] private string offlineFrameDestination = "—";
     [ObservableProperty] private string offlineFrameService = "—";
     [ObservableProperty] private string offlineFrameChecksum = "—";
+    [ObservableProperty] private string offlineFrameParity = "—";
     [ObservableProperty] private string offlineFrameTiming = "—";
     [ObservableProperty] private string offlineFrameRaw = "—";
 
@@ -173,8 +175,8 @@ public partial class MainViewModel : ViewModelBase
         VisibleCandidates.Clear(); AnalogEvents.Clear(); SelectedCandidate = null; SelectedAnalogEvent = null;
         if (value is null) { Summary = "No session selected"; return; }
         RefreshAnalogSort();
-        Summary = $"{value.Id}   {value.State}   {value.Generation}   Date: {value.DateTime ?? "unavailable (device clock unset)"}   Duration: {(value.DurationMs is long ms ? $"{ms / 1000.0:F1} s" : "unknown")}\n" +
-            $"Candidates: {value.Candidates.Count}   Valid: {value.Count("VALID_KNOWN") + value.Count("VALID_UNKNOWN")}   ACK: {value.Candidates.Count(x => x.Ack == "ACK")}   Parity: {value.Count("INVALID_PARITY")}   Checksum: {value.Count("INVALID_CHECKSUM")}   Timing: {value.Count("INVALID_TIMING")}   Incomplete: {value.Count("INCOMPLETE")}   Analog: {value.AnalogEvents.Count}   Warnings: {value.Diagnostics.Count}";
+        Summary = $"Analyzer: {value.Analyzer}   Session: {value.Id}   State: {value.State}   Duration: {(value.DurationMs is long ms ? $"{TimeSpan.FromMilliseconds(ms):hh\\:mm\\:ss}" : "unknown")}   Events: {value.DisplayEventCount}   RAW available: {value.RawAvailableText}\n" +
+            $"Date: {value.DateTime ?? "unavailable (device clock unset)"}   Format: {value.Generation}   Candidates: {value.Candidates.Count}   Valid: {value.Count("VALID_KNOWN") + value.Count("VALID_UNKNOWN")}   ACK: {value.Candidates.Count(x => x.Ack == "ACK")}   Parity: {value.Count("INVALID_PARITY")}   Checksum: {value.Count("INVALID_CHECKSUM")}   Timing: {value.Count("INVALID_TIMING")}   Incomplete: {value.Count("INCOMPLETE")}   Warnings: {value.Diagnostics.Count}";
         var decoded = value.Candidates.Select(KnxTelegramDecoder.Decode).Where(x => x is not null).ToArray();
         Summary += $"   Decoded standard: {decoded.Length}   Group: {decoded.Count(x => x!.DestinationType == "group")}   Individual: {decoded.Count(x => x!.DestinationType == "individual")}   Repeat: {decoded.Count(x => x!.Repeat)}";
         RefreshFilter();
@@ -240,24 +242,7 @@ public partial class MainViewModel : ViewModelBase
         var path = System.IO.Path.Combine(SelectedSession.DirectoryPath, "captures", $"event-{value.EventId:D6}.bin");
         try {
             var raw = value.EventRawV2 ? EventRawV2Reader.ReadCapture(SelectedSession.DirectoryPath, value.EventId) : RawCapture.Read(path);
-            SelectedCapture = raw;
-            ApplyOfflineAnalysis(raw);
-            AnalogVariationNotice = raw.PeakToPeak <= 2 ? "No analog variation in this capture" : "";
-            AnalogAxis = raw.SampleRateHz == 0 ? "Time axis unavailable (sample rate 0)" : $"Time: {-1000.0 * raw.TriggerIndex / raw.SampleRateHz:F1} ms     trigger t=0     +{1000.0 * (raw.Samples.Length - raw.TriggerIndex) / raw.SampleRateHz:F1} ms";
-            var pipeline = AnalogVoltagePipeline.FromSessionMetadata(SelectedSession.Metadata);
-            string voltage;
-            if (pipeline.Calibration is null) {
-                voltage = $"Estimated ADC voltage — experimental calibration (GPIO5): {ExperimentalEstimatedCalibration.EstimateMillivolts(raw.Minimum):F0}–{ExperimentalEstimatedCalibration.EstimateMillivolts(raw.Maximum):F0} mV. One approximate point; proportional display assumption; accuracy unknown. RAW remains authoritative.";
-            } else if (pipeline.TryEstimateGpio5Millivolts(raw.Minimum, out var lowMv) &&
-                       pipeline.TryEstimateGpio5Millivolts(raw.Maximum, out var highMv)) {
-                voltage = $"Estimated ADC at GPIO5: {lowMv:F1}–{highMv:F1} mV (calibration: {pipeline.Calibration.Source}).";
-                if (pipeline.TryEstimateKnxBusVolts(raw.Minimum, out var lowBus) &&
-                    pipeline.TryEstimateKnxBusVolts(raw.Maximum, out var highBus))
-                    voltage += $" Estimated KNX bus: {lowBus:F2}–{highBus:F2} V (divider: {pipeline.Divider!.Source}).";
-            } else {
-                voltage = "ADC calibration does not cover this RAW range. GPIO5 voltage is unavailable.";
-            }
-            AnalogDetails = $"RAW at GPIO5: {raw.Samples.Length} samples | {raw.SampleRateHz} Hz | min {raw.Minimum} | max {raw.Maximum} | P-P {raw.PeakToPeak} | mean {raw.Mean:F2} | CRC {(raw.CrcValid ? "OK" : "INVALID")} | trigger index {raw.TriggerIndex}\n{voltage}\n\n" + AnalogDetails;
+            PresentCapture(raw);
         } catch (Exception e) { AnalogDetails = $"RAW unavailable: {e.Message}\n\n" + AnalogDetails; }
     }
     private async Task LoadNetworkCaptureAsync(Session session, AnalogEvent value)
@@ -267,11 +252,26 @@ public partial class MainViewModel : ViewModelBase
             var progress = new Progress<NetworkImportProgress>(x => NetworkProgress = x.FromCache ? $"cache · {x.Downloaded} bytes" : x.Total is long total ? $"{x.Stage} · {x.Downloaded}/{total}" : x.Stage);
             var raw = await networkImport!.FetchEventAsync(session, value.EventId, progress);
             if (!ReferenceEquals(SelectedSession, session) || SelectedAnalogEvent?.EventId != value.EventId) return;
-            value.CaptureSummary = raw.Summary; SelectedCapture = raw; ApplyOfflineAnalysis(raw);
-            AnalogVariationNotice = raw.PeakToPeak <= 2 ? "No analog variation in this capture" : "";
-            AnalogAxis = raw.SampleRateHz == 0 ? "Time axis unavailable (sample rate 0)" : $"Time: {-1000.0 * raw.TriggerIndex / raw.SampleRateHz:F1} ms     trigger t=0     +{1000.0 * (raw.Samples.Length - raw.TriggerIndex) / raw.SampleRateHz:F1} ms";
+            value.CaptureSummary = raw.Summary; PresentCapture(raw);
             NetworkProgress = "verification · CRC OK · decode"; Status = $"Event {value.EventId}: network RAW verified and decoded.";
         } catch (Exception e) { NetworkProgress = "error · retry available"; Status = $"Network RAW: {e.Message}"; AnalogDetails = $"RAW unavailable: {e.Message}\n\n" + AnalogDetails; }
+    }
+    private void PresentCapture(RawCapture raw)
+    {
+        if (!raw.CrcValid) throw new InvalidDataException("RAW CRC is invalid; decode refused.");
+        SelectedCapture = raw; ApplyOfflineAnalysis(raw);
+        AnalogVariationNotice = raw.PeakToPeak <= 2 ? "No analog variation in this capture" : "";
+        AnalogAxis = raw.SampleRateHz == 0 ? "Time axis unavailable (sample rate 0)" : $"Time: {-1000.0 * raw.TriggerIndex / raw.SampleRateHz:F1} ms     trigger t=0     +{1000.0 * (raw.Samples.Length - raw.TriggerIndex) / raw.SampleRateHz:F1} ms";
+        var pipeline = AnalogVoltagePipeline.FromSessionMetadata(SelectedSession!.Metadata);
+        string voltage;
+        if (pipeline.Calibration is null) {
+            voltage = $"Estimated ADC voltage — experimental calibration (GPIO5): {ExperimentalEstimatedCalibration.EstimateMillivolts(raw.Minimum):F0}–{ExperimentalEstimatedCalibration.EstimateMillivolts(raw.Maximum):F0} mV. One approximate point; proportional display assumption; accuracy unknown. RAW remains authoritative.";
+        } else if (pipeline.TryEstimateGpio5Millivolts(raw.Minimum, out var lowMv) && pipeline.TryEstimateGpio5Millivolts(raw.Maximum, out var highMv)) {
+            voltage = $"Estimated ADC at GPIO5: {lowMv:F1}–{highMv:F1} mV (calibration: {pipeline.Calibration.Source}).";
+            if (pipeline.TryEstimateKnxBusVolts(raw.Minimum, out var lowBus) && pipeline.TryEstimateKnxBusVolts(raw.Maximum, out var highBus))
+                voltage += $" Estimated KNX bus: {lowBus:F2}–{highBus:F2} V (divider: {pipeline.Divider!.Source}).";
+        } else voltage = "ADC calibration does not cover this RAW range. GPIO5 voltage is unavailable.";
+        AnalogDetails = $"RAW at GPIO5: {raw.Samples.Length} samples | {raw.SampleRateHz} Hz | min {raw.Minimum} | max {raw.Maximum} | P-P {raw.PeakToPeak} | mean {raw.Mean:F2} | CRC OK | trigger index {raw.TriggerIndex}\n{voltage}\n\n" + AnalogDetails;
     }
     partial void OnSelectedOfflineProfileChanged(Tp1AnalogDecodeProfile value)
     {
@@ -310,12 +310,13 @@ public partial class MainViewModel : ViewModelBase
         OfflineFrameDestination = value.Telegram?.Destination ?? "Indisponible";
         OfflineFrameService = value.Telegram?.Service ?? "Indisponible";
         OfflineFrameChecksum = value.ChecksumValid ? "Valide" : "Invalide";
+        OfflineFrameParity = value.ParityErrors == 0 ? "Valide" : $"Invalide · {value.ParityErrors} erreur(s)";
         OfflineFrameTiming = $"{value.TimingRmsMicroseconds:F2} µs RMS · max {value.TimingMaxErrorMicroseconds:F2} µs";
         OfflineFrameRaw = value.RawHex;
     }
     private void ClearOfflineFrame()
     {
         OfflineFrameTitle = "";
-        OfflineFrameSource = OfflineFrameDestination = OfflineFrameService = OfflineFrameChecksum = OfflineFrameTiming = OfflineFrameRaw = "—";
+        OfflineFrameSource = OfflineFrameDestination = OfflineFrameService = OfflineFrameChecksum = OfflineFrameParity = OfflineFrameTiming = OfflineFrameRaw = "—";
     }
 }

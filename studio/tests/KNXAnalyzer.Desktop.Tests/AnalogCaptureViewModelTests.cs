@@ -6,6 +6,25 @@ namespace KNXAnalyzer.Desktop.Tests;
 public class AnalogCaptureViewModelTests
 {
     [Fact]
+    public void RefusesToDecodeLocalRawWhenCrcIsInvalid()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "knxstudio-invalid-crc-" + Guid.NewGuid().ToString("N"));
+        try {
+            MakeSession(root, "s-invalid", (9u, new ushort[] { 100, 200, 300 }));
+            var rawPath = Path.Combine(root, "sessions", "s-invalid", "captures", "event-000009.bin");
+            var bytes = File.ReadAllBytes(rawPath);
+            bytes[^1] ^= 1;
+            File.WriteAllBytes(rawPath, bytes);
+            var vm = new MainViewModel();
+            vm.OpenFolder(root);
+            vm.SelectedAnalogEvent = Assert.Single(vm.AnalogEvents);
+            Assert.Null(vm.SelectedCapture);
+            Assert.Contains("CRC is invalid; decode refused", vm.AnalogDetails);
+            Assert.Empty(vm.OfflineCandidates);
+        } finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public void SortsSyntheticCapturesAndSelectsLargestAcrossSessions()
     {
         var root = Path.Combine(Path.GetTempPath(), "knxstudio-analog-" + Guid.NewGuid().ToString("N"));

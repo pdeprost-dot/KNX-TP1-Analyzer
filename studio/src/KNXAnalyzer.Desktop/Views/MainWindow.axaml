@@ -46,19 +46,19 @@
               <ScrollViewer Grid.Row="3"><TextBlock Text="{Binding Details}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
             </Grid>
           </TabItem>
-          <TabItem Header="Captures analogiques">
-            <Grid ColumnDefinitions="430,*" ColumnSpacing="8">
+          <TabItem Header="Events / Timeline">
+            <Grid ColumnDefinitions="560,*" ColumnSpacing="8">
               <Grid RowDefinitions="Auto,Auto,*" RowSpacing="5">
                 <ComboBox ItemsSource="{Binding AnalogSortOptions}" SelectedItem="{Binding SelectedAnalogSort}" HorizontalAlignment="Left" MinWidth="180"/>
-                <Grid Grid.Row="1" ColumnDefinitions="70,75,75,75,80" Margin="7">
-                  <TextBlock Text="Event"/><TextBlock Grid.Column="1" Text="Min"/><TextBlock Grid.Column="2" Text="Max"/>
-                  <TextBlock Grid.Column="3" Text="P-P"/><TextBlock Grid.Column="4" Text="CRC"/>
+                <Grid Grid.Row="1" ColumnDefinitions="55,110,*,105,80" Margin="7">
+                  <TextBlock Text="Event"/><TextBlock Grid.Column="1" Text="Position"/><TextBlock Grid.Column="2" Text="Type / metadata"/>
+                  <TextBlock Grid.Column="3" Text="RAW window"/><TextBlock Grid.Column="4" Text="CRC"/>
                 </Grid>
                 <ListBox Grid.Row="2" ItemsSource="{Binding AnalogEvents}" SelectedItem="{Binding SelectedAnalogEvent}">
                   <ListBox.ItemTemplate><DataTemplate>
-                    <Grid ColumnDefinitions="70,75,75,75,80" Margin="3">
-                      <TextBlock Text="{Binding EventId}"/><TextBlock Grid.Column="1" Text="{Binding MinimumText}"/>
-                      <TextBlock Grid.Column="2" Text="{Binding MaximumText}"/><TextBlock Grid.Column="3" Text="{Binding PeakToPeakText}"/>
+                    <Grid ColumnDefinitions="55,110,*,105,80" Margin="3">
+                      <TextBlock Text="{Binding EventId}"/><TextBlock Grid.Column="1" Text="{Binding PositionText}"/>
+                      <TextBlock Grid.Column="2" Text="{Binding Kind}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="3" Text="{Binding WindowText}"/>
                       <TextBlock Grid.Column="4" Text="{Binding CrcText}"/>
                     </Grid>
                   </DataTemplate></ListBox.ItemTemplate>
@@ -122,13 +122,14 @@
                     <Border BorderBrush="DodgerBlue" BorderThickness="1" Padding="10">
                       <StackPanel Spacing="5">
                         <TextBlock Text="{Binding OfflineFrameTitle}" FontWeight="Bold" Foreground="DodgerBlue" TextWrapping="Wrap"/>
-                        <Grid ColumnDefinitions="105,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="3">
+                        <Grid ColumnDefinitions="105,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="3">
                           <TextBlock Text="Source"/><TextBlock Grid.Column="1" Text="{Binding OfflineFrameSource}" FontWeight="SemiBold"/>
                           <TextBlock Grid.Row="1" Text="Destination"/><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding OfflineFrameDestination}" FontWeight="SemiBold"/>
                           <TextBlock Grid.Row="2" Text="Service"/><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding OfflineFrameService}" FontWeight="SemiBold"/>
-                          <TextBlock Grid.Row="3" Text="Checksum"/><TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding OfflineFrameChecksum}" FontWeight="SemiBold"/>
-                          <TextBlock Grid.Row="4" Text="Timing"/><TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding OfflineFrameTiming}" FontWeight="SemiBold"/>
-                          <TextBlock Grid.Row="5" Text="Octets RAW"/><TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding OfflineFrameRaw}" FontFamily="Consolas" TextWrapping="Wrap"/>
+                          <TextBlock Grid.Row="3" Text="Parity"/><TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding OfflineFrameParity}" FontWeight="SemiBold"/>
+                          <TextBlock Grid.Row="4" Text="Checksum"/><TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding OfflineFrameChecksum}" FontWeight="SemiBold"/>
+                          <TextBlock Grid.Row="5" Text="Timing"/><TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding OfflineFrameTiming}" FontWeight="SemiBold"/>
+                          <TextBlock Grid.Row="6" Text="Octets RAW"/><TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding OfflineFrameRaw}" FontFamily="Consolas" TextWrapping="Wrap"/>
                         </Grid>
                         <TextBlock Text="Décodée offline directement depuis les échantillons ADC." FontStyle="Italic" Opacity="0.75" TextWrapping="Wrap"/>
                       </StackPanel>

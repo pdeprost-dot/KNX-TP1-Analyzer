@@ -12,7 +12,9 @@ public sealed class Session
     public required string State { get; init; }
     public string? DateTime { get; init; }
     public long? DurationMs { get; init; }
-    public int EventCount { get; init; }
+    public int EventCount { get; set; }
+    public long? RawAvailableBytes { get; set; }
+    public string Analyzer { get; set; } = "LOCAL / SD";
     public JsonElement Metadata { get; init; }
     public NetworkSessionContext? Network { get; set; }
     public List<Tp1Candidate> Candidates { get; } = [];
@@ -23,6 +25,12 @@ public sealed class Session
         : AnalogEvents.Count > 0 ? "Sessions / Scope"
         : "Session metadata only";
     public int Count(string classification) => Candidates.Count(x => x.Classification == classification);
+    public int DisplayEventCount => Math.Max(EventCount, AnalogEvents.Count);
+    public string RawAvailableText => RawAvailableBytes is long bytes ? FormatBytes(bytes) : "unknown";
+    private static string FormatBytes(long bytes) => bytes < 1024 ? $"{bytes} B"
+        : bytes < 1024 * 1024 ? $"{bytes / 1024.0:F1} KiB"
+        : bytes < 1024L * 1024 * 1024 ? $"{bytes / (1024.0 * 1024):F1} MiB"
+        : $"{bytes / (1024.0 * 1024 * 1024):F2} GiB";
 }
 
 public sealed class Tp1Candidate
@@ -60,10 +68,33 @@ public sealed class AnalogEvent
     public bool EventRawV2 { get; init; }
     public JsonElement Original { get; init; }
     public RawCaptureSummary? CaptureSummary { get; set; }
+    public ulong? TimestampUs => U64("trigger_timestamp_us") ?? U64("timestamp_us") ?? U64("monotonic_us");
+    public ulong? SampleStart => U64("sample_start");
+    public ulong? SampleEnd => U64("sample_end");
+    public ulong? SampleTrigger => U64("sample_trigger");
+    public string Kind => Text("event_type") ?? Text("type") ?? Text("reason") ?? TriggerSource();
+    public string PositionText => TimestampUs is ulong timestamp ? FormatPosition(timestamp)
+        : SampleTrigger is ulong trigger ? $"sample {trigger:N0}" : "unknown";
+    public string WindowText => SampleStart is ulong start && SampleEnd is ulong end && end >= start
+        ? $"{end - start:N0} samples" : CaptureSummary is { } summary ? $"{summary.SampleCount:N0} samples" : "unknown";
     public string MinimumText => CaptureSummary?.Minimum.ToString() ?? "—";
     public string MaximumText => CaptureSummary?.Maximum.ToString() ?? "—";
     public string PeakToPeakText => CaptureSummary?.PeakToPeak.ToString() ?? "—";
     public string CrcText => CaptureSummary is null ? "Unavailable" : CaptureSummary.CrcValid ? "OK" : "INVALID";
+    private ulong? U64(string name)
+    {
+        if (!Original.TryGetProperty(name, out var value)) return null;
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetUInt64(out var number)) return number;
+        return value.ValueKind == JsonValueKind.String && ulong.TryParse(value.GetString(), out number) ? number : null;
+    }
+    private string? Text(string name) => Original.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+    private string TriggerSource() => U64("trigger_source") switch { 1 => "D44", 2 => "synthetic", 3 => "D44 + synthetic", _ => "analog event" };
+    private static string FormatPosition(ulong microseconds)
+    {
+        var span = TimeSpan.FromTicks(checked((long)Math.Min(microseconds, (ulong)(long.MaxValue / 10))) * 10);
+        return span.TotalHours >= 1 ? $"{(int)span.TotalHours:D2}:{span.Minutes:D2}:{span.Seconds:D2}.{span.Milliseconds:D3}"
+            : $"{span.Minutes:D2}:{span.Seconds:D2}.{span.Milliseconds:D3}";
+    }
 }
 
 public sealed record RawCaptureSummary(int SampleCount, uint SampleRateHz, ushort Minimum, ushort Maximum, int PeakToPeak, double Mean, bool CrcValid);
@@ -126,6 +157,9 @@ public static class SessionReader
             }
             session.AnalogEvents.Add(analog);
         });
+        var captures = Path.Combine(directory, "captures");
+        if (Directory.Exists(captures)) session.RawAvailableBytes = Directory.EnumerateFiles(captures, "event-*.bin")
+            .Sum(file => new FileInfo(file).Length);
         return session;
     }
 

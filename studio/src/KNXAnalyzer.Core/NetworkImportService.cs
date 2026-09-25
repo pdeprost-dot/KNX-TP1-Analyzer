@@ -85,6 +85,8 @@ public sealed class NetworkImportService : IDisposable
         }
         var session = EventRawV2Reader.OpenSession(cache);
         session.Network = new(BaseUri, Analyzer.AnalyzerId, sessionUuid, info.Folder, cache);
+        session.Analyzer = $"{Analyzer.Hostname} · {Analyzer.AnalyzerId}";
+        if (long.TryParse(info.RawBytes, out var rawBytes)) session.RawAvailableBytes = rawBytes;
         return session;
     }
 
