@@ -1,0 +1,249 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:KNXAnalyzer.Desktop.ViewModels" xmlns:views="using:KNXAnalyzer.Desktop.Views" x:Class="KNXAnalyzer.Desktop.Views.MainWindow"
+        x:DataType="vm:MainViewModel" Title="KNX TP1 Analyzer Studio" Width="1400" Height="850" MinWidth="950" MinHeight="600">
+  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" Margin="12" RowSpacing="8">
+    <DockPanel Grid.Row="0" LastChildFill="True">
+      <Button DockPanel.Dock="Right" Content="Open SD / Sessions Folder" Click="OpenClicked" Margin="8,0,0,0" />
+      <Button DockPanel.Dock="Right" Content="Network" Click="NetworkClicked" Margin="8,0,0,0" />
+      <TextBox DockPanel.Dock="Right" Width="220" Text="{Binding NetworkHost}" PlaceholderText="Analyzer hostname / IP" />
+      <Button DockPanel.Dock="Right" Content="Générer lot complet" Click="BatchClicked" Margin="8,0,0,0" />
+      <Button DockPanel.Dock="Right" Content="Export JSON" Click="ExportJsonClicked" Margin="8,0,0,0" />
+      <Button DockPanel.Dock="Right" Content="Générer rapport" Click="ReportClicked" Margin="8,0,0,0" />
+      <ComboBox x:Name="AnalysisScope" DockPanel.Dock="Right" SelectedIndex="0" MinWidth="170" Margin="8,0,0,0">
+        <ComboBoxItem Content="Session sélectionnée"/><ComboBoxItem Content="Dossier complet"/>
+      </ComboBox>
+      <TextBox Text="{Binding FolderPath}" PlaceholderText="SD root or sessions folder" KeyDown="PathKeyDown" />
+    </DockPanel>
+    <StackPanel Grid.Row="1"><TextBlock Text="{Binding NetworkAnalyzer}" TextWrapping="Wrap"/><TextBlock Text="{Binding NetworkProgress}" Opacity="0.7"/></StackPanel>
+    <TextBlock Grid.Row="2" Text="{Binding Status}" TextWrapping="Wrap" />
+    <Grid Grid.Row="3" ColumnDefinitions="270,6,*">
+      <Grid Grid.Column="0" RowDefinitions="Auto,*" RowSpacing="6">
+        <TextBlock Text="Sessions" FontWeight="Bold" />
+        <ListBox Grid.Row="1" ItemsSource="{Binding Sessions}" SelectedItem="{Binding SelectedSession}">
+          <ListBox.ItemTemplate><DataTemplate><StackPanel Margin="3"><TextBlock Text="{Binding Id}" FontWeight="SemiBold"/><TextBlock Text="{Binding State}"/><TextBlock Text="{Binding Generation}" Opacity="0.7" TextWrapping="Wrap"/></StackPanel></DataTemplate></ListBox.ItemTemplate>
+        </ListBox>
+      </Grid>
+      <GridSplitter Grid.Column="1" Width="6" ResizeDirection="Columns" />
+      <Grid Grid.Column="2" RowDefinitions="Auto,Auto,*" RowSpacing="6">
+        <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" FontWeight="SemiBold" />
+        <ComboBox Grid.Row="1" ItemsSource="{Binding Filters}" SelectedItem="{Binding SelectedFilter}" HorizontalAlignment="Left" MinWidth="150" />
+        <TabControl Grid.Row="2" SelectedIndex="{Binding SelectedTabIndex}">
+          <TabItem Header="Télégrammes TP1">
+            <Grid RowDefinitions="Auto,*,6,170">
+              <Grid ColumnDefinitions="135,155,105,120,105,55,80,55,*" Margin="7"><TextBlock Text="Time"/><TextBlock Grid.Column="1" Text="Classification"/><TextBlock Grid.Column="2" Text="Source"/><TextBlock Grid.Column="3" Text="Destination"/><TextBlock Grid.Column="4" Text="Type / Service"/><TextBlock Grid.Column="5" Text="Length"/><TextBlock Grid.Column="6" Text="Checksum"/><TextBlock Grid.Column="7" Text="ACK"/><TextBlock Grid.Column="8" Text="Raw bytes"/></Grid>
+              <ListBox Grid.Row="1" ItemsSource="{Binding VisibleCandidates}" SelectedItem="{Binding SelectedCandidate}">
+                <ListBox.ItemTemplate><DataTemplate>
+                  <Grid ColumnDefinitions="135,155,105,120,105,55,80,55,*" Margin="3">
+                    <TextBlock Text="{Binding Time}"/><TextBlock Grid.Column="1" Text="{Binding Classification}"/>
+                    <TextBlock Grid.Column="2" Text="{Binding Source}"/><TextBlock Grid.Column="3" Text="{Binding Destination}"/>
+                    <TextBlock Grid.Column="4" Text="{Binding Service}"/><TextBlock Grid.Column="5" Text="{Binding RawBytes.Length}"/>
+                    <TextBlock Grid.Column="6" Text="{Binding Checksum}"/><TextBlock Grid.Column="7" Text="{Binding Ack}"/>
+                    <TextBlock Grid.Column="8" Text="{Binding RawHex}" TextTrimming="CharacterEllipsis"/>
+                  </Grid>
+                </DataTemplate></ListBox.ItemTemplate>
+              </ListBox>
+              <GridSplitter Grid.Row="2" Height="6" ResizeDirection="Rows"/>
+              <ScrollViewer Grid.Row="3"><TextBlock Text="{Binding Details}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
+            </Grid>
+          </TabItem>
+          <TabItem Header="Captures analogiques">
+            <Grid ColumnDefinitions="430,*" ColumnSpacing="8">
+              <Grid RowDefinitions="Auto,Auto,*" RowSpacing="5">
+                <ComboBox ItemsSource="{Binding AnalogSortOptions}" SelectedItem="{Binding SelectedAnalogSort}" HorizontalAlignment="Left" MinWidth="180"/>
+                <Grid Grid.Row="1" ColumnDefinitions="70,75,75,75,80" Margin="7">
+                  <TextBlock Text="Event"/><TextBlock Grid.Column="1" Text="Min"/><TextBlock Grid.Column="2" Text="Max"/>
+                  <TextBlock Grid.Column="3" Text="P-P"/><TextBlock Grid.Column="4" Text="CRC"/>
+                </Grid>
+                <ListBox Grid.Row="2" ItemsSource="{Binding AnalogEvents}" SelectedItem="{Binding SelectedAnalogEvent}">
+                  <ListBox.ItemTemplate><DataTemplate>
+                    <Grid ColumnDefinitions="70,75,75,75,80" Margin="3">
+                      <TextBlock Text="{Binding EventId}"/><TextBlock Grid.Column="1" Text="{Binding MinimumText}"/>
+                      <TextBlock Grid.Column="2" Text="{Binding MaximumText}"/><TextBlock Grid.Column="3" Text="{Binding PeakToPeakText}"/>
+                      <TextBlock Grid.Column="4" Text="{Binding CrcText}"/>
+                    </Grid>
+                  </DataTemplate></ListBox.ItemTemplate>
+                </ListBox>
+              </Grid>
+              <Grid Grid.Column="1" RowDefinitions="Auto,220,Auto,Auto,Auto,Auto,*" RowSpacing="8">
+                <StackPanel Orientation="Horizontal" Spacing="12">
+                  <Button Content="Reset / Fit" Click="ResetWaveformClicked"/>
+                  <TextBlock Text="Wheel: time zoom  •  Drag: pan  •  Ctrl+wheel: Y zoom  •  Double-click: fit" VerticalAlignment="Center"/>
+                </StackPanel>
+                <Border Grid.Row="1" BorderBrush="Gray" BorderThickness="1">
+                  <views:WaveformView x:Name="Waveform" Capture="{Binding SelectedCapture}"/>
+                </Border>
+                <Grid Grid.Row="2" ColumnDefinitions="65,*,80" ColumnSpacing="8">
+                  <TextBlock Text="Zoom" VerticalAlignment="Center"/>
+                  <Slider x:Name="ZoomSlider" Grid.Column="1" Minimum="0" Maximum="1" ValueChanged="ZoomSliderChanged"/>
+                  <ComboBox x:Name="AnalogUnit" Grid.Column="2" SelectionChanged="AnalogUnitChanged" SelectedIndex="0">
+                    <ComboBoxItem Content="Estimated mV"/><ComboBoxItem Content="RAW"/>
+                  </ComboBox>
+                </Grid>
+                <Grid Grid.Row="3" ColumnDefinitions="65,*" ColumnSpacing="8">
+                  <TextBlock Text="Position" VerticalAlignment="Center"/>
+                  <Slider x:Name="PositionSlider" Grid.Column="1" Minimum="0" Maximum="1" ValueChanged="PositionSliderChanged"/>
+                </Grid>
+                <TextBlock Grid.Row="4" Text="{Binding AnalogAxis}" TextWrapping="Wrap"/>
+                <TextBlock Grid.Row="5" Text="{Binding AnalogVariationNotice}" FontWeight="Bold"/>
+                <Grid Grid.Row="6" ColumnDefinitions="3*,2*" ColumnSpacing="12">
+                  <Grid RowDefinitions="Auto,Auto,Auto,Auto,*" RowSpacing="6">
+                    <TextBlock Text="ANALYSE OFFLINE RAW" FontWeight="Bold" FontSize="15"/>
+                    <TextBlock Grid.Row="1" Text="{Binding OfflineAnalysisSummary}" TextWrapping="Wrap" Opacity="0.75"/>
+                    <StackPanel Grid.Row="2" Spacing="4">
+                      <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="Profil de décodage" VerticalAlignment="Center" FontWeight="SemiBold"/>
+                        <ComboBox ItemsSource="{Binding OfflineProfiles}" SelectedItem="{Binding SelectedOfflineProfile}" MinWidth="225">
+                          <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding DisplayName}"/></DataTemplate></ComboBox.ItemTemplate>
+                        </ComboBox>
+                      </StackPanel>
+                      <TextBlock Text="{Binding OfflineProfileComparison}" TextWrapping="Wrap" FontSize="11" Opacity="0.8"/>
+                    </StackPanel>
+                    <Grid Grid.Row="3" ColumnDefinitions="Auto,90,Auto,100,Auto,90" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="3" Margin="0,4">
+                      <TextBlock Text="Échantillons"/><TextBlock Grid.Column="1" Text="{Binding OfflineSampleCount}" FontWeight="SemiBold"/>
+                      <TextBlock Grid.Column="2" Text="Durée"/><TextBlock Grid.Column="3" Text="{Binding OfflineDuration}" FontWeight="SemiBold"/>
+                      <TextBlock Grid.Column="4" Text="Activité"/><TextBlock Grid.Column="5" Text="{Binding OfflineActivity}" FontWeight="SemiBold"/>
+                      <TextBlock Grid.Row="1" Text="Niveau de repos"/><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding OfflineBaseline}" FontWeight="SemiBold"/>
+                      <TextBlock Grid.Row="1" Grid.Column="2" Text="Bruit RMS"/><TextBlock Grid.Row="1" Grid.Column="3" Text="{Binding OfflineNoiseRms}" FontWeight="SemiBold"/>
+                      <TextBlock Grid.Row="1" Grid.Column="4" Text="Impulsions TP1"/><TextBlock Grid.Row="1" Grid.Column="5" Text="{Binding OfflinePulseCount}" FontWeight="SemiBold"/>
+                      <TextBlock Grid.Row="2" Text="Candidats"/><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding OfflineCandidateCount}" FontWeight="SemiBold"/>
+                      <TextBlock Grid.Row="2" Grid.Column="2" Text="Trames valides"/><TextBlock Grid.Row="2" Grid.Column="3" Text="{Binding OfflineValidFrameCount}" FontWeight="SemiBold"/>
+                    </Grid>
+                    <ListBox Grid.Row="4" ItemsSource="{Binding OfflineCandidates}" SelectedItem="{Binding SelectedOfflineCandidate}">
+                      <ListBox.ItemTemplate><DataTemplate>
+                        <Grid ColumnDefinitions="90,155,*" Margin="3">
+                          <TextBlock Text="{Binding StartMilliseconds, StringFormat={}{0:F3} ms}"/>
+                          <TextBlock Grid.Column="1" Text="{Binding Classification}"/>
+                          <TextBlock Grid.Column="2" Text="{Binding RawHex}" TextTrimming="CharacterEllipsis"/>
+                        </Grid>
+                      </DataTemplate></ListBox.ItemTemplate>
+                    </ListBox>
+                  </Grid>
+                  <Grid Grid.Column="1" RowDefinitions="Auto,Auto,*" RowSpacing="6">
+                    <Border BorderBrush="DodgerBlue" BorderThickness="1" Padding="10">
+                      <StackPanel Spacing="5">
+                        <TextBlock Text="{Binding OfflineFrameTitle}" FontWeight="Bold" Foreground="DodgerBlue" TextWrapping="Wrap"/>
+                        <Grid ColumnDefinitions="105,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="3">
+                          <TextBlock Text="Source"/><TextBlock Grid.Column="1" Text="{Binding OfflineFrameSource}" FontWeight="SemiBold"/>
+                          <TextBlock Grid.Row="1" Text="Destination"/><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding OfflineFrameDestination}" FontWeight="SemiBold"/>
+                          <TextBlock Grid.Row="2" Text="Service"/><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding OfflineFrameService}" FontWeight="SemiBold"/>
+                          <TextBlock Grid.Row="3" Text="Checksum"/><TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding OfflineFrameChecksum}" FontWeight="SemiBold"/>
+                          <TextBlock Grid.Row="4" Text="Timing"/><TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding OfflineFrameTiming}" FontWeight="SemiBold"/>
+                          <TextBlock Grid.Row="5" Text="Octets RAW"/><TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding OfflineFrameRaw}" FontFamily="Consolas" TextWrapping="Wrap"/>
+                        </Grid>
+                        <TextBlock Text="Décodée offline directement depuis les échantillons ADC." FontStyle="Italic" Opacity="0.75" TextWrapping="Wrap"/>
+                      </StackPanel>
+                    </Border>
+                    <Separator Grid.Row="1"/>
+                    <ScrollViewer Grid.Row="2"><TextBlock Text="{Binding AnalogDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
+                  </Grid>
+                </Grid>
+              </Grid>
+            </Grid>
+          </TabItem>
+          <TabItem Header="Participants">
+            <Grid RowDefinitions="Auto,*" RowSpacing="8">
+              <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="8" Margin="6">
+                <Border BorderBrush="Gray" BorderThickness="0,0,1,0"><StackPanel><TextBlock Text="Trafic observé" Opacity="0.7"/><TextBlock Text="{Binding ObservedTrafficCount, StringFormat={}{0} télégrammes}" FontSize="17" FontWeight="SemiBold"/></StackPanel></Border>
+                <Border Grid.Column="1" BorderBrush="Gray" BorderThickness="0,0,1,0"><StackPanel><TextBlock Text="Participants" Opacity="0.7"/><TextBlock Text="{Binding ParticipantCount}" FontSize="17" FontWeight="SemiBold"/></StackPanel></Border>
+                <Border Grid.Column="2" BorderBrush="Gray" BorderThickness="0,0,1,0"><StackPanel><TextBlock Text="Groupes" Opacity="0.7"/><TextBlock Text="{Binding GroupCount}" FontSize="17" FontWeight="SemiBold"/></StackPanel></Border>
+                <StackPanel Grid.Column="3"><TextBlock Text="Motifs récurrents" Opacity="0.7"/><TextBlock Text="{Binding InteractionCount}" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="{Binding SyntheticExcludedCount, StringFormat={}{0} télégrammes de test synthétiques exclus}" FontSize="11" Opacity="0.6"/></StackPanel>
+              </Grid>
+              <Grid Grid.Row="1" ColumnDefinitions="3*,2*" ColumnSpacing="12">
+                <Grid RowDefinitions="Auto,*">
+                  <Grid ColumnDefinitions="110,105,90,90,80" Margin="7,5">
+                    <TextBlock Text="Adresse" FontWeight="SemiBold"/>
+                    <TextBlock Grid.Column="1" Text="Télégrammes" FontWeight="SemiBold" HorizontalAlignment="Right"/>
+                    <TextBlock Grid.Column="2" Text="% trafic" FontWeight="SemiBold" HorizontalAlignment="Right"/>
+                    <TextBlock Grid.Column="3" Text="Sessions" FontWeight="SemiBold" HorizontalAlignment="Right"/>
+                    <TextBlock Grid.Column="4" Text="Groupes" FontWeight="SemiBold" HorizontalAlignment="Right"/>
+                  </Grid>
+                  <ListBox Grid.Row="1" ItemsSource="{Binding Participants}" SelectedItem="{Binding SelectedParticipant}">
+                    <ListBox.ItemTemplate><DataTemplate><Grid ColumnDefinitions="110,105,90,90,80" Margin="5,4">
+                      <TextBlock Text="{Binding Address}" FontWeight="SemiBold"/>
+                      <TextBlock Grid.Column="1" Text="{Binding TelegramCount}" HorizontalAlignment="Right"/>
+                      <TextBlock Grid.Column="2" Text="{Binding TrafficPercent, StringFormat={}{0:F1} %}" HorizontalAlignment="Right"/>
+                      <TextBlock Grid.Column="3" Text="{Binding SessionCount}" HorizontalAlignment="Right"/>
+                      <TextBlock Grid.Column="4" Text="{Binding GroupCount}" HorizontalAlignment="Right"/>
+                    </Grid></DataTemplate></ListBox.ItemTemplate>
+                  </ListBox>
+                </Grid>
+                <ScrollViewer Grid.Column="1"><StackPanel Spacing="10" Margin="4">
+                  <TextBlock Text="{Binding SelectedParticipant.Address, StringFormat={}PARTICIPANT {0}}" FontSize="19" FontWeight="Bold"/>
+                  <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="8">
+                    <StackPanel><TextBlock Text="Télégrammes observés" Opacity="0.7"/><TextBlock Text="{Binding SelectedParticipant.TelegramCount}" FontWeight="SemiBold"/></StackPanel>
+                    <StackPanel Grid.Column="1"><TextBlock Text="Part du trafic" Opacity="0.7"/><TextBlock Text="{Binding SelectedParticipant.TrafficPercent, StringFormat={}{0:F1} %}" FontWeight="SemiBold"/></StackPanel>
+                    <StackPanel Grid.Column="2"><TextBlock Text="Sessions" Opacity="0.7"/><TextBlock Text="{Binding SelectedParticipant.SessionCount}" FontWeight="SemiBold"/></StackPanel>
+                    <StackPanel Grid.Column="3"><TextBlock Text="Groupes utilisés" Opacity="0.7"/><TextBlock Text="{Binding SelectedParticipant.GroupCount}" FontWeight="SemiBold"/></StackPanel>
+                  </Grid>
+                  <Separator/>
+                  <TextBlock Text="DESTINATIONS OBSERVÉES" FontWeight="Bold"/>
+                  <Grid ColumnDefinitions="110,90,130,*"><TextBlock Text="Destination" FontWeight="SemiBold"/><TextBlock Grid.Column="1" Text="Télégrammes" FontWeight="SemiBold"/><TextBlock Grid.Column="2" Text="Service" FontWeight="SemiBold"/><TextBlock Grid.Column="3" Text="Valeur / APDU" FontWeight="SemiBold"/></Grid>
+                  <ItemsControl ItemsSource="{Binding ParticipantDestinations}"><ItemsControl.ItemTemplate><DataTemplate>
+                    <Grid ColumnDefinitions="110,90,130,*" Margin="0,3"><TextBlock Text="{Binding Destination}"/><TextBlock Grid.Column="1" Text="{Binding TelegramCount}"/><TextBlock Grid.Column="2" Text="{Binding Services}" TextWrapping="Wrap"/><TextBlock Grid.Column="3" Text="{Binding ValuesAndApdu}" FontFamily="Consolas" TextWrapping="Wrap"/></Grid>
+                  </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                  <Separator/><TextBlock Text="PRIORITÉ · REPEAT · CHECKSUM" FontWeight="Bold"/><TextBlock Text="{Binding ParticipantPriorities}" TextWrapping="Wrap"/>
+                  <TextBlock Text="MOTIFS TEMPORELS ASSOCIÉS" FontWeight="Bold"/><TextBlock Text="{Binding ParticipantMotifs}" TextWrapping="Wrap"/>
+                </StackPanel></ScrollViewer>
+              </Grid>
+            </Grid>
+          </TabItem>
+          <TabItem Header="Groupes">
+            <Grid RowDefinitions="Auto,*" RowSpacing="8">
+              <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="8" Margin="6">
+                <Border BorderBrush="Gray" BorderThickness="0,0,1,0"><StackPanel><TextBlock Text="Trafic observé" Opacity="0.7"/><TextBlock Text="{Binding ObservedTrafficCount, StringFormat={}{0} télégrammes}" FontSize="17" FontWeight="SemiBold"/></StackPanel></Border>
+                <Border Grid.Column="1" BorderBrush="Gray" BorderThickness="0,0,1,0"><StackPanel><TextBlock Text="Participants" Opacity="0.7"/><TextBlock Text="{Binding ParticipantCount}" FontSize="17" FontWeight="SemiBold"/></StackPanel></Border>
+                <Border Grid.Column="2" BorderBrush="Gray" BorderThickness="0,0,1,0"><StackPanel><TextBlock Text="Groupes" Opacity="0.7"/><TextBlock Text="{Binding GroupCount}" FontSize="17" FontWeight="SemiBold"/></StackPanel></Border>
+                <StackPanel Grid.Column="3"><TextBlock Text="Motifs récurrents" Opacity="0.7"/><TextBlock Text="{Binding InteractionCount}" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="{Binding SyntheticExcludedCount, StringFormat={}{0} télégrammes de test synthétiques exclus}" FontSize="11" Opacity="0.6"/></StackPanel>
+              </Grid>
+              <Grid Grid.Row="1" ColumnDefinitions="3*,2*" ColumnSpacing="12">
+                <Grid RowDefinitions="Auto,*">
+                  <Grid ColumnDefinitions="130,110,100,100" Margin="7,5"><TextBlock Text="Adresse groupe" FontWeight="SemiBold"/><TextBlock Grid.Column="1" Text="Télégrammes" FontWeight="SemiBold" HorizontalAlignment="Right"/><TextBlock Grid.Column="2" Text="Émetteurs" FontWeight="SemiBold" HorizontalAlignment="Right"/><TextBlock Grid.Column="3" Text="Sessions" FontWeight="SemiBold" HorizontalAlignment="Right"/></Grid>
+                  <ListBox Grid.Row="1" ItemsSource="{Binding Groups}" SelectedItem="{Binding SelectedGroup}"><ListBox.ItemTemplate><DataTemplate>
+                    <Grid ColumnDefinitions="130,110,100,100" Margin="5,4"><TextBlock Text="{Binding Address}" FontWeight="SemiBold"/><TextBlock Grid.Column="1" Text="{Binding TelegramCount}" HorizontalAlignment="Right"/><TextBlock Grid.Column="2" Text="{Binding EmitterCount}" HorizontalAlignment="Right"/><TextBlock Grid.Column="3" Text="{Binding SessionCount}" HorizontalAlignment="Right"/></Grid>
+                  </DataTemplate></ListBox.ItemTemplate></ListBox>
+                </Grid>
+                <ScrollViewer Grid.Column="1"><StackPanel Spacing="10" Margin="4">
+                  <TextBlock Text="{Binding SelectedGroup.Address, StringFormat={}GROUPE {0}}" FontSize="19" FontWeight="Bold"/>
+                  <Grid ColumnDefinitions="*,*,*" ColumnSpacing="8"><StackPanel><TextBlock Text="Télégrammes" Opacity="0.7"/><TextBlock Text="{Binding SelectedGroup.TelegramCount}" FontWeight="SemiBold"/></StackPanel><StackPanel Grid.Column="1"><TextBlock Text="Émetteurs observés" Opacity="0.7"/><TextBlock Text="{Binding SelectedGroup.EmitterCount}" FontWeight="SemiBold"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="Sessions" Opacity="0.7"/><TextBlock Text="{Binding SelectedGroup.SessionCount}" FontWeight="SemiBold"/></StackPanel></Grid>
+                  <Separator/><TextBlock Text="ÉMETTEURS OBSERVÉS" FontWeight="Bold"/><ItemsControl ItemsSource="{Binding SelectedGroup.Model.Sources}"><ItemsControl.ItemTemplate><DataTemplate><Grid ColumnDefinitions="120,*" Margin="0,3"><TextBlock Text="{Binding Value}"/><TextBlock Grid.Column="1" Text="{Binding Count, StringFormat={}{0} télégrammes}"/></Grid></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                  <TextBlock Text="SERVICES / APCI" FontWeight="Bold"/><TextBlock Text="{Binding GroupServices}" TextWrapping="Wrap"/>
+                  <TextBlock Text="APDU / PAYLOADS OBSERVÉS" FontWeight="Bold"/><TextBlock Text="{Binding GroupValues}" FontFamily="Consolas" TextWrapping="Wrap"/>
+                  <TextBlock Text="MOTIFS TEMPORELS ASSOCIÉS" FontWeight="Bold"/><TextBlock Text="{Binding GroupInteractions}" TextWrapping="Wrap"/>
+                  <TextBlock Text="Aucun DPT ni rôle métier n'est interprété." FontStyle="Italic" Opacity="0.65"/>
+                </StackPanel></ScrollViewer>
+              </Grid>
+            </Grid>
+          </TabItem>
+          <TabItem Header="Interactions">
+            <Grid RowDefinitions="Auto,Auto,*" RowSpacing="8">
+              <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="8" Margin="6">
+                <Border BorderBrush="Gray" BorderThickness="0,0,1,0"><StackPanel><TextBlock Text="Trafic observé" Opacity="0.7"/><TextBlock Text="{Binding ObservedTrafficCount, StringFormat={}{0} télégrammes}" FontSize="17" FontWeight="SemiBold"/></StackPanel></Border>
+                <Border Grid.Column="1" BorderBrush="Gray" BorderThickness="0,0,1,0"><StackPanel><TextBlock Text="Participants" Opacity="0.7"/><TextBlock Text="{Binding ParticipantCount}" FontSize="17" FontWeight="SemiBold"/></StackPanel></Border>
+                <Border Grid.Column="2" BorderBrush="Gray" BorderThickness="0,0,1,0"><StackPanel><TextBlock Text="Groupes" Opacity="0.7"/><TextBlock Text="{Binding GroupCount}" FontSize="17" FontWeight="SemiBold"/></StackPanel></Border>
+                <StackPanel Grid.Column="3"><TextBlock Text="Motifs récurrents" Opacity="0.7"/><TextBlock Text="{Binding InteractionCount}" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="{Binding SyntheticExcludedCount, StringFormat={}{0} télégrammes de test synthétiques exclus}" FontSize="11" Opacity="0.6"/></StackPanel>
+              </Grid>
+              <ComboBox Grid.Row="1" ItemsSource="{Binding InteractionSortOptions}" SelectedItem="{Binding SelectedInteractionSort}" HorizontalAlignment="Left" MinWidth="180"/>
+              <Grid Grid.Row="2" ColumnDefinitions="3*,2*" ColumnSpacing="12">
+                <Grid RowDefinitions="Auto,*">
+                  <Grid ColumnDefinitions="*,95,80,110" Margin="7,5"><TextBlock Text="Séquence observée" FontWeight="SemiBold"/><TextBlock Grid.Column="1" Text="Occurrences" FontWeight="SemiBold" HorizontalAlignment="Right"/><TextBlock Grid.Column="2" Text="Sessions" FontWeight="SemiBold" HorizontalAlignment="Right"/><TextBlock Grid.Column="3" Text="Délai médian" FontWeight="SemiBold" HorizontalAlignment="Right"/></Grid>
+                  <ListBox Grid.Row="1" ItemsSource="{Binding Interactions}" SelectedItem="{Binding SelectedInteraction}"><ListBox.ItemTemplate><DataTemplate>
+                    <Grid ColumnDefinitions="*,95,80,110" Margin="5,5"><TextBlock Text="{Binding Sequence}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{Binding Occurrences}" HorizontalAlignment="Right"/><TextBlock Grid.Column="2" Text="{Binding SessionCount}" HorizontalAlignment="Right"/><TextBlock Grid.Column="3" Text="{Binding MedianDelayMs, StringFormat={}{0:F3} ms}" HorizontalAlignment="Right"/></Grid>
+                  </DataTemplate></ListBox.ItemTemplate></ListBox>
+                </Grid>
+                <ScrollViewer Grid.Column="1"><StackPanel Spacing="9" Margin="4">
+                  <TextBlock Text="MOTIF TEMPOREL RÉCURRENT" FontSize="18" FontWeight="Bold"/>
+                  <TextBlock Text="SÉQUENCE A" FontWeight="Bold"/><Grid ColumnDefinitions="105,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="3"><TextBlock Text="Source"/><TextBlock Grid.Column="1" Text="{Binding SelectedInteraction.ASource}" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Destination"/><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedInteraction.ADestination}" FontWeight="SemiBold"/><TextBlock Grid.Row="2" Text="Service"/><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedInteraction.AService}"/><TextBlock Grid.Row="3" Text="Valeur / APDU"/><TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedInteraction.AValue}" FontFamily="Consolas" TextWrapping="Wrap"/></Grid>
+                  <Separator/><TextBlock Text="DÉLAI" FontWeight="Bold"/><Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="8"><StackPanel><TextBlock Text="Minimum" Opacity="0.7"/><TextBlock Text="{Binding SelectedInteraction.MinimumDelayMs, StringFormat={}{0:F3} ms}" FontWeight="SemiBold"/></StackPanel><StackPanel Grid.Column="1"><TextBlock Text="Médiane" Opacity="0.7"/><TextBlock Text="{Binding SelectedInteraction.MedianDelayMs, StringFormat={}{0:F3} ms}" FontWeight="SemiBold"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="Moyenne" Opacity="0.7"/><TextBlock Text="{Binding SelectedInteraction.MeanDelayMs, StringFormat={}{0:F3} ms}" FontWeight="SemiBold"/></StackPanel><StackPanel Grid.Column="3"><TextBlock Text="Maximum" Opacity="0.7"/><TextBlock Text="{Binding SelectedInteraction.MaximumDelayMs, StringFormat={}{0:F3} ms}" FontWeight="SemiBold"/></StackPanel></Grid>
+                  <Separator/><TextBlock Text="SÉQUENCE B" FontWeight="Bold"/><Grid ColumnDefinitions="105,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="3"><TextBlock Text="Source"/><TextBlock Grid.Column="1" Text="{Binding SelectedInteraction.BSource}" FontWeight="SemiBold"/><TextBlock Grid.Row="1" Text="Destination"/><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedInteraction.BDestination}" FontWeight="SemiBold"/><TextBlock Grid.Row="2" Text="Service"/><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedInteraction.BService}"/><TextBlock Grid.Row="3" Text="Valeur / APDU"/><TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedInteraction.BValue}" FontFamily="Consolas" TextWrapping="Wrap"/></Grid>
+                  <Separator/><TextBlock Text="OBSERVATIONS" FontWeight="Bold"/><TextBlock Text="{Binding SelectedInteraction.Occurrences, StringFormat={}Occurrences : {0}}"/><TextBlock Text="{Binding SelectedInteraction.SessionCount, StringFormat={}Sessions distinctes : {0}}"/>
+                  <TextBlock Text="Proximité temporelle observée — aucune relation causale n'est déduite." FontStyle="Italic" Opacity="0.65" TextWrapping="Wrap"/>
+                </StackPanel></ScrollViewer>
+              </Grid>
+            </Grid>
+          </TabItem>
+        </TabControl>
+      </Grid>
+    </Grid>
+    <TextBlock Grid.Row="4" Text="Read only • TP1 timestamps are device uptime when date_time is null • VALID_UNKNOWN is a valid frame" Opacity="0.7"/>
+  </Grid>
+</Window>
