@@ -34,13 +34,29 @@ String sessionDir;
 std::atomic<State> state{State::IDLE};
 std::atomic<bool> stopRequested{false}, producerDrained{true}, writerActive{false};
 std::atomic<uint64_t> producedSamples{0}, producedChunks{0}, rawBytes{0}, lostSamples{0};
-std::atomic<uint32_t> poolExhaustion{0}, sdErrors{0}, r1Count{0}, rawHandleFailures{0}, retryFailures{0};
+std::atomic<uint32_t> poolExhaustion{0}, sdErrors{0}, r1Count{0}, rawHandleFailures{0}, retryFailures{0}, reopenFailures{0};
 uint64_t startedUs = 0, closedUs = 0, segmentBytes = 0, segmentSampleStart = 0;
 uint32_t segmentIndex = 0, segmentChunks = 0, segmentCrc = 0, sessionCrc = 0;
 uint64_t storedChunks = 0, checkpointCount = 0, lastStoredSampleEnd = 0;
 char mapBuffer[8192];
 size_t mapUsed = 0;
 bool sdReady = false, finalPass = false, invariantOk = false;
+uint32_t freeMin = CHUNK_COUNT, pendingMax = 0, readyMax = 0;
+uint64_t writeLatencyTotalUs = 0, checkpointLatencyTotalUs = 0;
+uint32_t writeLatencyMinUs = UINT32_MAX, writeLatencyMaxUs = 0, writeLatencyMaxChunk = 0, writeCount = 0;
+uint32_t checkpointLatencyMinUs = UINT32_MAX, checkpointLatencyMaxUs = 0, checkpointLatencyMaxChunk = 0;
+uint32_t writerHoldMaxUs = 0, writerHoldMaxChunk = 0;
+uint64_t nextChunkDueUs = 0;
+uint32_t cadenceRemainder = 0;
+
+void updateQueueStats() {
+  const uint32_t freeDepth = freeQ ? uxQueueMessagesWaiting(freeQ) : 0;
+  const uint32_t readyDepth = readyQ ? uxQueueMessagesWaiting(readyQ) : 0;
+  const uint32_t pending = readyDepth + (writerActive.load() ? 1U : 0U);
+  if (freeDepth < freeMin) freeMin = freeDepth;
+  if (readyDepth > readyMax) readyMax = readyDepth;
+  if (pending > pendingMax) pendingMax = pending;
+}
 
 const char *stateName(State value) {
   switch (value) {
@@ -120,6 +136,7 @@ bool prepareSegment(uint64_t sampleStart) {
 
 bool writeCheckpoint() {
   if (!storedChunks || (storedChunks % CHECKPOINT_CHUNKS) != 0) return true;
+  const uint64_t started = esp_timer_get_time();
   if (!flushMap()) return false;
   rawFile.flush(); mapFile.flush(); indexFile.flush(); eventsFile.flush();
   const uint32_t recordCrc = esp_crc32_le(0, reinterpret_cast<const uint8_t *>(&sessionCrc), sizeof(sessionCrc));
@@ -130,6 +147,13 @@ bool writeCheckpoint() {
       "\"record_crc32\":\"%08X\"}\n",
       checkpointCount + 1, storedChunks, lastStoredSampleEnd, rawBytes.load(), sessionCrc, recordCrc) > 0;
   if (ok) { checkpointsFile.flush(); ++checkpointCount; }
+  const uint32_t elapsed = uint32_t(esp_timer_get_time() - started);
+  checkpointLatencyTotalUs += elapsed;
+  if (elapsed < checkpointLatencyMinUs) checkpointLatencyMinUs = elapsed;
+  if (elapsed > checkpointLatencyMaxUs) {
+    checkpointLatencyMaxUs = elapsed;
+    checkpointLatencyMaxChunk = uint32_t(storedChunks);
+  }
   return ok;
 }
 
@@ -146,6 +170,13 @@ bool writeChunk(Chunk &chunk) {
   const uint64_t t0 = esp_timer_get_time();
   size_t written = rawFile.write(reinterpret_cast<uint8_t *>(chunk.data), CHUNK_BYTES);
   const uint32_t latencyUs = uint32_t(esp_timer_get_time() - t0);
+  writeLatencyTotalUs += latencyUs;
+  ++writeCount;
+  if (latencyUs < writeLatencyMinUs) writeLatencyMinUs = latencyUs;
+  if (latencyUs > writeLatencyMaxUs) {
+    writeLatencyMaxUs = latencyUs;
+    writeLatencyMaxChunk = uint32_t(chunk.seq);
+  }
   const int firstErrno = errno;
   if (written != CHUNK_BYTES) {
     ++rawHandleFailures;
@@ -154,6 +185,7 @@ bool writeChunk(Chunk &chunk) {
     rawFile = SD.open(sessionDir + "/" + rawName(segmentIndex), FILE_APPEND);
     const int reopenErrno = errno;
     const uint64_t reopenSize = rawFile ? rawFile.size() : 0;
+    if (!rawFile) ++reopenFailures;
     const bool coherent = rawFile && reopenSize == chunk.segmentOffset && rawFile.position() == chunk.segmentOffset;
     size_t retryWritten = 0;
     int retryErrno = 0;
@@ -204,6 +236,12 @@ void producerTask(void *) {
       continue;
     }
     producerDrained = false;
+    while (!stopRequested.load()) {
+      const int64_t remaining = int64_t(nextChunkDueUs - esp_timer_get_time());
+      if (remaining <= 0) break;
+      if (remaining > 2000) vTaskDelay(pdMS_TO_TICKS(1)); else taskYIELD();
+    }
+    if (stopRequested.load()) continue;
     Chunk *chunk = nullptr;
     if (xQueueReceive(freeQ, &chunk, 0) != pdTRUE) {
       ++poolExhaustion;
@@ -212,6 +250,7 @@ void producerTask(void *) {
       stopRequested = true;
       continue;
     }
+    updateQueueStats();
     const uint64_t start = producedSamples.load();
     chunk->seq = producedChunks.load() + 1;
     chunk->sampleStart = start;
@@ -223,12 +262,12 @@ void producerTask(void *) {
       xQueueSend(freeQ, &chunk, portMAX_DELAY);
       continue;
     }
-    const uint64_t due = startedUs + (producedSamples.load() * 1000000ULL) / SAMPLE_RATE;
-    while (!stopRequested.load()) {
-      const int64_t remaining = int64_t(due - esp_timer_get_time());
-      if (remaining <= 0) break;
-      if (remaining > 2000) vTaskDelay(pdMS_TO_TICKS(1)); else taskYIELD();
-    }
+    updateQueueStats();
+    uint32_t intervalUs = 49152;
+    cadenceRemainder += 16384;
+    if (cadenceRemainder >= SAMPLE_RATE) { cadenceRemainder -= SAMPLE_RATE; ++intervalUs; }
+    const uint64_t now = esp_timer_get_time();
+    nextChunkDueUs = (nextChunkDueUs > now ? nextChunkDueUs : now) + intervalUs;
   }
 }
 
@@ -236,20 +275,31 @@ void writerTask(void *) {
   for (;;) {
     Chunk *chunk = nullptr;
     if (xQueueReceive(readyQ, &chunk, pdMS_TO_TICKS(20)) == pdTRUE) {
+      const uint64_t holdStarted = esp_timer_get_time();
       writerActive = true;
+      updateQueueStats();
       writeChunk(*chunk);
       writerActive = false;
       xQueueSend(freeQ, &chunk, portMAX_DELAY);
+      const uint32_t heldUs = uint32_t(esp_timer_get_time() - holdStarted);
+      if (heldUs > writerHoldMaxUs) { writerHoldMaxUs = heldUs; writerHoldMaxChunk = uint32_t(chunk->seq); }
+      updateQueueStats();
     }
   }
 }
 
 void resetCounters() {
   producedSamples = producedChunks = rawBytes = lostSamples = 0;
-  poolExhaustion = sdErrors = r1Count = rawHandleFailures = retryFailures = 0;
+  poolExhaustion = sdErrors = r1Count = rawHandleFailures = retryFailures = reopenFailures = 0;
   segmentIndex = segmentChunks = segmentCrc = sessionCrc = 0;
   segmentBytes = storedChunks = checkpointCount = lastStoredSampleEnd = 0;
   mapUsed = 0; finalPass = invariantOk = false;
+  freeMin = CHUNK_COUNT; pendingMax = readyMax = 0;
+  writeLatencyTotalUs = checkpointLatencyTotalUs = 0;
+  writeLatencyMinUs = checkpointLatencyMinUs = UINT32_MAX;
+  writeLatencyMaxUs = checkpointLatencyMaxUs = writerHoldMaxUs = 0;
+  writeLatencyMaxChunk = checkpointLatencyMaxChunk = writerHoldMaxChunk = writeCount = 0;
+  cadenceRemainder = 0;
 }
 
 bool startRun() {
@@ -276,6 +326,7 @@ bool startRun() {
   session.flush(); session.close();
   stopRequested = false; producerDrained = false;
   startedUs = esp_timer_get_time(); closedUs = 0;
+  nextChunkDueUs = startedUs + 49152;
   state = State::RUNNING;
   Serial.printf("{\"type\":\"START\",\"dir\":\"%s\",\"sample_rate_hz\":%u}\n", sessionDir.c_str(), SAMPLE_RATE);
   return true;
@@ -303,11 +354,21 @@ void finalizeRun() {
     result.printf("{\"pass\":%s,\"schema_version\":\"s3-synthetic-raw-sd-bench-1.0\","
                   "\"duration_us\":\"%llu\",\"samples\":\"%llu\",\"chunks\":\"%llu\","
                   "\"raw_bytes\":\"%llu\",\"raw_handle_failures\":%u,\"recovered_R1\":%u,"
-                  "\"retry_failures\":%u,\"sd_errors\":%u,\"data_loss\":\"%llu\","
-                  "\"pool_exhaustion\":%u,\"session_crc32\":\"%08X\",\"invariant\":%s,\"closed\":true}\n",
+                  "\"retry_failures\":%u,\"reopen_failures\":%u,\"sd_errors\":%u,\"data_loss\":\"%llu\","
+                  "\"pool_exhaustion\":%u,\"free_min\":%u,\"pending_max\":%u,\"ready_max\":%u,"
+                  "\"write_us_min\":%u,\"write_us_avg\":%.3f,\"write_us_max\":%u,\"write_max_chunk\":%u,"
+                  "\"checkpoint_us_min\":%u,\"checkpoint_us_avg\":%.3f,\"checkpoint_us_max\":%u,"
+                  "\"checkpoint_max_chunk\":%u,\"writer_hold_us_max\":%u,\"writer_hold_max_chunk\":%u,"
+                  "\"session_crc32\":\"%08X\",\"invariant\":%s,\"closed\":true}\n",
                   finalPass ? "true" : "false", closedUs - startedUs, producedSamples.load(), producedChunks.load(),
-                  rawBytes.load(), rawHandleFailures.load(), r1Count.load(), retryFailures.load(), sdErrors.load(),
-                  lostSamples.load(), poolExhaustion.load(), sessionCrc, invariantOk ? "true" : "false");
+                  rawBytes.load(), rawHandleFailures.load(), r1Count.load(), retryFailures.load(), reopenFailures.load(),
+                  sdErrors.load(), lostSamples.load(), poolExhaustion.load(), freeMin, pendingMax, readyMax,
+                  writeCount ? writeLatencyMinUs : 0, writeCount ? double(writeLatencyTotalUs) / writeCount : 0,
+                  writeLatencyMaxUs, writeLatencyMaxChunk,
+                  checkpointCount ? checkpointLatencyMinUs : 0,
+                  checkpointCount ? double(checkpointLatencyTotalUs) / checkpointCount : 0,
+                  checkpointLatencyMaxUs, checkpointLatencyMaxChunk, writerHoldMaxUs, writerHoldMaxChunk,
+                  sessionCrc, invariantOk ? "true" : "false");
     result.flush(); result.close();
   } else { ++sdErrors; finalPass = false; }
   state = finalPass ? State::CLOSED : State::FAILED;
@@ -321,10 +382,20 @@ void printStatus() {
   const uint64_t duration = startedUs ? end - startedUs : 0;
   Serial.printf("{\"type\":\"STATUS\",\"state\":\"%s\",\"duration_us\":\"%llu\","
                 "\"chunks\":\"%llu\",\"samples\":\"%llu\",\"raw_bytes\":\"%llu\","
-                "\"R1\":%u,\"sd_errors\":%u,\"loss\":\"%llu\",\"pool_exhaustion\":%u,"
-                "\"crc32\":\"%08X\",\"invariant\":%s,\"pass\":%s}\n",
+                "\"R1\":%u,\"raw_handle_failures\":%u,\"retry_failures\":%u,\"reopen_failures\":%u,"
+                "\"sd_errors\":%u,\"loss\":\"%llu\",\"pool_exhaustion\":%u,"
+                "\"free_min\":%u,\"pending_max\":%u,\"ready_current\":%u,\"ready_max\":%u,"
+                "\"write_us_min\":%u,\"write_us_avg\":%.3f,\"write_us_max\":%u,"
+                "\"checkpoint_us_min\":%u,\"checkpoint_us_avg\":%.3f,\"checkpoint_us_max\":%u,"
+                "\"writer_hold_us_max\":%u,\"crc32\":\"%08X\",\"invariant\":%s,\"pass\":%s}\n",
                 stateName(currentState), duration, producedChunks.load(), producedSamples.load(), rawBytes.load(),
-                r1Count.load(), sdErrors.load(), lostSamples.load(), poolExhaustion.load(), sessionCrc,
+                r1Count.load(), rawHandleFailures.load(), retryFailures.load(), reopenFailures.load(),
+                sdErrors.load(), lostSamples.load(), poolExhaustion.load(), freeMin, pendingMax,
+                readyQ ? uxQueueMessagesWaiting(readyQ) : 0, readyMax,
+                writeCount ? writeLatencyMinUs : 0, writeCount ? double(writeLatencyTotalUs) / writeCount : 0,
+                writeLatencyMaxUs, checkpointCount ? checkpointLatencyMinUs : 0,
+                checkpointCount ? double(checkpointLatencyTotalUs) / checkpointCount : 0,
+                checkpointLatencyMaxUs, writerHoldMaxUs, sessionCrc,
                 invariantOk ? "true" : "false", finalPass ? "true" : "false");
 }
 
