@@ -1,5 +1,22 @@
 # KNX TP1 Analyzer
 
+## Monorepo
+
+This repository contains both validated components without changing the existing firmware layout:
+
+- **firmware/**, **tools/**, and the root **docs/**: ESP32-C6 acquisition firmware and field documentation;
+- **studio/**: .NET/Avalonia desktop Studio, including LOCAL/SD and Network Import V1;
+- **AGENTS.md**: shared working rules;
+- **docs/CODEX-CHECKPOINT.md**: common validated checkpoint.
+
+Frozen baselines:
+
+- Firmware Field Acquisition V1: **field-analyzer-v1** / **00ffc40ccd80916c4a56d09f437b84b319d4d0e2**;
+- Firmware HEAD before monorepo: **c46f0fc6c2bfee5155fbbae980daa13d1ec86d1a**;
+- Studio Network Import V1: **52c90ae18a638aa732078098956ea24e3d6b1d43**;
+- Studio V0: **studio-v0** / **43ec68021e7efa4a4937ac1dc4f0cbab0acd98c6**.
+
+Studio is imported under **studio/** with its Git history. Existing firmware paths remain unchanged.
 Analyseur portable expérimental KNX TP1 : corréler le protocole et la couche physique.
 Experimental portable KNX TP1 analyzer: correlate protocol traffic with the physical layer.
 

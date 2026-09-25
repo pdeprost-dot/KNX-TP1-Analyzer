@@ -7,3 +7,7 @@
 /.apply-*
 /*.patch
 /.make-*.ps1
+# Studio local environment (never versioned)
+/studio/.dotnet/
+/studio/.firmware-reference/
+/studio/.validation/
