@@ -5,6 +5,12 @@ Experimental portable KNX TP1 analyzer: correlate protocol traffic with the phys
 
 [Français](#français) · [English](#english)
 
+## Field Acquisition V1 / Acquisition terrain V1
+
+Le firmware terrain stable est documenté dans [Field Acquisition V1](docs/field-acquisition-v1.md), avec le [format Network Session API V1](docs/network-session-api-v1.md) et les [notes de release bilingues](RELEASE-field-analyzer-v1.md).
+
+The stable field firmware is documented in [Field Acquisition V1](docs/field-acquisition-v1.md), together with [Network Session API V1](docs/network-session-api-v1.md) and the [bilingual release notes](RELEASE-field-analyzer-v1.md).
+
 ## Français
 
 > [!CAUTION]
