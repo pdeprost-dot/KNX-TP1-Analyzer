@@ -69,3 +69,35 @@ radio operation, supply transients local to the Sense microSD interface, and an
 interaction inside the Wi-Fi/SD/SPI software stack not resolved by simple task
 priority or core affinity changes. The next planned experiment is a strict A/B
 with a second physical microSD using the T5 reference configuration.
+
+## Physical microSD A/B/A/C campaign
+
+All tests below used the same flashed firmware and T5 reference configuration:
+producer core 1 / priority 4, writer core 0 / priority 2, associated STA with
+normal power save and TX power, and no AP, HTTP, mDNS, OTA, or intentional
+network traffic. No card was reformatted by the experiment.
+
+| Physical card / test | Duration | RAW bytes | First EIO | RAW failures / R1 | Retry / reopen failures | Terminal SD error | Loss / pool | Invariant | Result |
+|---|---:|---:|---:|---:|---:|---|---:|---|---|
+| Original failing card, T12 return-A | 37.276135 s | 5,947,392 | 2.191779 s | 21 / 19 | 2 / 0 | 2 x `raw_retry` | 12,288 / 1 | false | FAIL |
+| Raspberry Pi 16 GB card, T11 | 59.333278 s | 9,822,208 | none | 0 / 0 | 0 / 0 | none | 0 / 0 | true | PASS |
+| Raspberry Pi 16 GB card, T11b | 59.949187 s | 9,920,512 | none | 0 / 0 | 0 / 0 | none | 0 / 0 | true | PASS |
+| Raspberry Pi 16 GB card, long qualification | 600.031823 s | 99,581,952 | 91.460971 s | 4 / 4 | 0 / 0 | none | 0 / 0 | true | PASS |
+| Kingston 16 GB `SDC10G2/16GB`, T13 | 59.616895 s | 9,879,552 | 18.238215 s | 4 / 4 | 0 / 0 | none | 0 / 0 | true | PASS |
+| Kingston 16 GB `SDC10G2/16GB`, T13b | 59.786869 s | 9,887,744 | none | 0 / 0 | 0 / 0 | none | 0 / 0 | true | PASS |
+
+### Conclusions bounded by the measurements
+
+- The A/B/A/C sequence demonstrates a strong dependence on the physical microSD:
+  the original card repeatedly produces frequent EIO failures and eventually
+  exceeds the available recovery, while two independent cards complete the
+  tested acquisitions without data loss.
+- A passing card is not necessarily EIO-free. The Raspberry Pi card had four
+  recovered incidents during 600 seconds, and the Kingston had four during T13.
+- R1 reopen/reposition/retry recovery preserved the data invariant when those
+  occasional incidents occurred. It must remain present and instrumented.
+- A successful `SD.begin()` and SDHC detection are insufficient qualification
+  for sustained RAW acquisition. Qualification must exercise sustained writes
+  and verify recovery, loss, CRC/invariant, and finalization.
+- These results do not establish Wi-Fi as the physical cause and do not identify
+  the internal or electrical mechanism responsible for EIO.
