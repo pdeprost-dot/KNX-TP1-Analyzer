@@ -17,6 +17,12 @@ constexpr uint32_t SD_CS = 21, SD_SCK = 7, SD_MISO = 8, SD_MOSI = 9;
 constexpr uint64_t SEGMENT_LIMIT = 512ULL * 1024ULL * 1024ULL;
 constexpr uint32_t CHECKPOINT_CHUNKS = 64;
 constexpr uint32_t INDEX_STRIDE_CHUNKS = 256;
+#ifndef S3_WRITER_PRIORITY
+#define S3_WRITER_PRIORITY 2
+#endif
+#ifndef S3_WRITER_CORE
+#define S3_WRITER_CORE 0
+#endif
 
 enum class State : uint8_t { IDLE, RUNNING, STOPPING, CLOSED, FAILED };
 struct Chunk {
@@ -35,6 +41,8 @@ std::atomic<State> state{State::IDLE};
 std::atomic<bool> stopRequested{false}, producerDrained{true}, writerActive{false};
 std::atomic<uint64_t> producedSamples{0}, producedChunks{0}, rawBytes{0}, lostSamples{0};
 std::atomic<uint32_t> poolExhaustion{0}, sdErrors{0}, r1Count{0}, rawHandleFailures{0}, retryFailures{0}, reopenFailures{0};
+const char *lastSdErrorSource = "none";
+uint64_t firstRawFailureUs = 0;
 uint64_t startedUs = 0, closedUs = 0, segmentBytes = 0, segmentSampleStart = 0;
 uint32_t segmentIndex = 0, segmentChunks = 0, segmentCrc = 0, sessionCrc = 0;
 uint64_t storedChunks = 0, checkpointCount = 0, lastStoredSampleEnd = 0;
@@ -157,14 +165,16 @@ bool writeCheckpoint() {
   return ok;
 }
 
-void failSd() {
+void failSd(const char *source) {
+  lastSdErrorSource = source;
   ++sdErrors;
+  Serial.printf("{\"type\":\"SD_ERROR\",\"source\":\"%s\",\"count\":%u}\n", source, sdErrors.load());
   stopRequested = true;
   state = State::FAILED;
 }
 
 bool writeChunk(Chunk &chunk) {
-  if (!prepareSegment(chunk.sampleStart)) { failSd(); return false; }
+  if (!prepareSegment(chunk.sampleStart)) { failSd(rawFile ? "other_segment_metadata" : "raw_initial"); return false; }
   chunk.segmentOffset = segmentBytes;
   errno = 0;
   const uint64_t t0 = esp_timer_get_time();
@@ -180,6 +190,9 @@ bool writeChunk(Chunk &chunk) {
   const int firstErrno = errno;
   if (written != CHUNK_BYTES) {
     ++rawHandleFailures;
+    if (!firstRawFailureUs) firstRawFailureUs = esp_timer_get_time() - startedUs;
+    Serial.printf("{\"type\":\"RAW_FAILURE\",\"incident\":%u,\"time_us\":\"%llu\",\"errno\":%d,\"returned\":%u}\n",
+                  rawHandleFailures.load(), esp_timer_get_time() - startedUs, firstErrno, unsigned(written));
     rawFile.close();
     errno = 0;
     rawFile = SD.open(sessionDir + "/" + rawName(segmentIndex), FILE_APPEND);
@@ -205,7 +218,7 @@ bool writeChunk(Chunk &chunk) {
         reopenErrno, reopenSize, unsigned(retryWritten), retryErrno, result);
     incidentsFile.flush();
     if (retryWritten == CHUNK_BYTES) { ++r1Count; written = retryWritten; }
-    else { ++retryFailures; lostSamples += CHUNK_SAMPLES - written / 2; failSd(); return false; }
+    else { ++retryFailures; lostSamples += CHUNK_SAMPLES - written / 2; failSd(!rawFile ? "reopen" : "raw_retry"); return false; }
   }
   chunk.crc = esp_crc32_le(0, reinterpret_cast<uint8_t *>(chunk.data), CHUNK_BYTES);
   sessionCrc = esp_crc32_le(sessionCrc, reinterpret_cast<uint8_t *>(chunk.data), CHUNK_BYTES);
@@ -215,12 +228,12 @@ bool writeChunk(Chunk &chunk) {
                      "\"sample_start\":\"%llu\",\"segment_index\":%u,\"segment_offset\":\"%llu\"}\n",
                      storedChunks, chunk.sampleStart, segmentIndex, chunk.segmentOffset);
   }
-  if (!appendMap(chunk)) { failSd(); return false; }
+  if (!appendMap(chunk)) { failSd("map"); return false; }
   rawBytes += CHUNK_BYTES;
   segmentBytes += CHUNK_BYTES;
   ++segmentChunks; ++storedChunks;
   lastStoredSampleEnd = chunk.sampleStart + CHUNK_SAMPLES;
-  if (!writeCheckpoint()) { failSd(); return false; }
+  if (!writeCheckpoint()) { failSd("checkpoint"); return false; }
   return true;
 }
 
@@ -291,6 +304,8 @@ void writerTask(void *) {
 void resetCounters() {
   producedSamples = producedChunks = rawBytes = lostSamples = 0;
   poolExhaustion = sdErrors = r1Count = rawHandleFailures = retryFailures = reopenFailures = 0;
+  lastSdErrorSource = "none";
+  firstRawFailureUs = 0;
   segmentIndex = segmentChunks = segmentCrc = sessionCrc = 0;
   segmentBytes = storedChunks = checkpointCount = lastStoredSampleEnd = 0;
   mapUsed = 0; finalPass = invariantOk = false;
@@ -370,7 +385,10 @@ void finalizeRun() {
                   checkpointLatencyMaxUs, checkpointLatencyMaxChunk, writerHoldMaxUs, writerHoldMaxChunk,
                   sessionCrc, invariantOk ? "true" : "false");
     result.flush(); result.close();
-  } else { ++sdErrors; finalPass = false; }
+  } else {
+    lastSdErrorSource = "finalization"; ++sdErrors; finalPass = false;
+    Serial.printf("{\"type\":\"SD_ERROR\",\"source\":\"finalization\",\"count\":%u}\n", sdErrors.load());
+  }
   state = finalPass ? State::CLOSED : State::FAILED;
   Serial.printf("{\"type\":\"FINALIZATION\",\"state\":\"%s\",\"pass\":%s,\"crc32\":\"%08X\",\"invariant\":%s}\n",
                 stateName(state.load()), finalPass ? "true" : "false", sessionCrc, invariantOk ? "true" : "false");
@@ -383,31 +401,51 @@ void printStatus() {
   Serial.printf("{\"type\":\"STATUS\",\"state\":\"%s\",\"duration_us\":\"%llu\","
                 "\"chunks\":\"%llu\",\"samples\":\"%llu\",\"raw_bytes\":\"%llu\","
                 "\"R1\":%u,\"raw_handle_failures\":%u,\"retry_failures\":%u,\"reopen_failures\":%u,"
-                "\"sd_errors\":%u,\"loss\":\"%llu\",\"pool_exhaustion\":%u,"
+                "\"sd_errors\":%u,\"sd_error_source\":\"%s\",\"loss\":\"%llu\",\"pool_exhaustion\":%u,"
                 "\"free_min\":%u,\"pending_max\":%u,\"ready_current\":%u,\"ready_max\":%u,"
                 "\"write_us_min\":%u,\"write_us_avg\":%.3f,\"write_us_max\":%u,"
                 "\"checkpoint_us_min\":%u,\"checkpoint_us_avg\":%.3f,\"checkpoint_us_max\":%u,"
-                "\"writer_hold_us_max\":%u,\"crc32\":\"%08X\",\"invariant\":%s,\"pass\":%s}\n",
+                "\"writer_hold_us_max\":%u,\"first_raw_failure_us\":\"%llu\",\"heap_internal_free\":%u,\"heap_internal_min\":%u,"
+                "\"heap_internal_largest\":%u,\"heap_dma_free\":%u,\"heap_dma_min\":%u,"
+                "\"heap_dma_largest\":%u,\"crc32\":\"%08X\",\"invariant\":%s,\"pass\":%s}\n",
                 stateName(currentState), duration, producedChunks.load(), producedSamples.load(), rawBytes.load(),
                 r1Count.load(), rawHandleFailures.load(), retryFailures.load(), reopenFailures.load(),
-                sdErrors.load(), lostSamples.load(), poolExhaustion.load(), freeMin, pendingMax,
+                sdErrors.load(), lastSdErrorSource, lostSamples.load(), poolExhaustion.load(), freeMin, pendingMax,
                 readyQ ? uxQueueMessagesWaiting(readyQ) : 0, readyMax,
                 writeCount ? writeLatencyMinUs : 0, writeCount ? double(writeLatencyTotalUs) / writeCount : 0,
                 writeLatencyMaxUs, checkpointCount ? checkpointLatencyMinUs : 0,
                 checkpointCount ? double(checkpointLatencyTotalUs) / checkpointCount : 0,
-                checkpointLatencyMaxUs, writerHoldMaxUs, sessionCrc,
+                checkpointLatencyMaxUs, writerHoldMaxUs, firstRawFailureUs,
+                heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                heap_caps_get_free_size(MALLOC_CAP_DMA), heap_caps_get_minimum_free_size(MALLOC_CAP_DMA),
+                heap_caps_get_largest_free_block(MALLOC_CAP_DMA), sessionCrc,
                 invariantOk ? "true" : "false", finalPass ? "true" : "false");
 }
 
+#ifndef S3_NETWORK_ENABLED
+#define S3_NETWORK_ENABLED 1
+#endif
+#if S3_NETWORK_ENABLED
+namespace s3net { void printDiagnostics(); }
+#endif
 void handleCommand(String command) {
   command.trim(); command.toUpperCase();
   if (command == "STATUS") printStatus();
+#if S3_NETWORK_ENABLED
+  else if (command == "NETSTATUS") s3net::printDiagnostics();
+#endif
   else if (command == "START") Serial.println(startRun() ? "OK START" : "ERROR START");
   else if (command == "STOP") {
     if (state.load() != State::RUNNING) Serial.println("ERROR STOP");
     else { finalizeRun(); Serial.println("OK STOP"); }
   } else if (command.length()) Serial.println("ERROR COMMAND");
 }
+
+#if S3_NETWORK_ENABLED
+#include "s3_network.h"
+#endif
 
 void setup() {
   Serial.begin(115200);
@@ -424,16 +462,22 @@ void setup() {
   }
   if (poolReady) {
     xTaskCreatePinnedToCore(producerTask, "synthetic", 4096, nullptr, 4, &producerHandle, 1);
-    xTaskCreatePinnedToCore(writerTask, "writer", 4096, nullptr, 2, &writerHandle, 0);
+    xTaskCreatePinnedToCore(writerTask, "writer", 4096, nullptr, S3_WRITER_PRIORITY, &writerHandle, S3_WRITER_CORE);
   }
   Serial.printf("{\"type\":\"BOOT\",\"board\":\"XIAO_ESP32S3_SENSE\",\"sd\":%s,"
                 "\"card_type\":%u,\"pool\":%s,\"camera\":false,\"microphone\":false,"
                 "\"wifi\":false,\"sample_rate_hz\":%u}\n",
                 sdReady ? "true" : "false", unsigned(SD.cardType()), poolReady ? "true" : "false", SAMPLE_RATE);
   if (!sdReady || !poolReady) state = State::FAILED;
+#if S3_NETWORK_ENABLED
+  s3net::begin();
+#endif
 }
 
 void loop() {
+#if S3_NETWORK_ENABLED
+  s3net::tick();
+#endif
   static String command;
   while (Serial.available()) {
     const char value = char(Serial.read());
