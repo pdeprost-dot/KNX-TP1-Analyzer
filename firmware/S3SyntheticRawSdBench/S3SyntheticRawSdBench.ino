@@ -35,13 +35,20 @@ SPIClass sdSpi(FSPI);
 Chunk *chunks[CHUNK_COUNT]{};
 QueueHandle_t freeQ = nullptr, readyQ = nullptr;
 TaskHandle_t producerHandle = nullptr, writerHandle = nullptr;
-File rawFile, mapFile, segmentsFile, indexFile, checkpointsFile, incidentsFile, eventsFile;
+File rawFile, mapFile, segmentsFile, indexFile, checkpointsFile, incidentsFile, eventsFile, gapsFile;
 String sessionDir;
 std::atomic<State> state{State::IDLE};
 std::atomic<bool> stopRequested{false}, producerDrained{true}, writerActive{false};
 std::atomic<uint64_t> producedSamples{0}, producedChunks{0}, rawBytes{0}, lostSamples{0};
 std::atomic<uint32_t> poolExhaustion{0}, sdErrors{0}, r1Count{0}, rawHandleFailures{0}, retryFailures{0}, reopenFailures{0};
+std::atomic<uint32_t> faultInjected{0}, syntheticR3Count{0}, gapCount{0};
 const char *lastSdErrorSource = "none";
+const char *completionStatus = "FAILED";
+uint64_t faultR3OnceChunk = 0;
+bool faultR3OnceConsumed = false;
+uint64_t gapSampleStart = 0, gapSampleEnd = 0;
+uint32_t gapSegmentBefore = 0, gapSegmentAfter = 0;
+uint64_t gapPreviousStoredEnd = 0, gapResumeSampleStart = 0;
 uint64_t firstRawFailureUs = 0;
 uint64_t startedUs = 0, closedUs = 0, segmentBytes = 0, segmentSampleStart = 0;
 uint32_t segmentIndex = 0, segmentChunks = 0, segmentCrc = 0, sessionCrc = 0;
@@ -132,6 +139,21 @@ bool completeSegment() {
   return ok;
 }
 
+bool abandonSegment(const char *reason) {
+  if (!rawFile) return true;
+  rawFile.flush();
+  rawFile.close();
+  const String name = rawName(segmentIndex);
+  const bool ok = segmentsFile.printf(
+      "{\"record_type\":\"SEGMENT_ABANDONED\",\"segment_index\":%u,\"filename\":\"%s\","
+      "\"sample_start\":\"%llu\",\"confirmed_sample_end\":\"%llu\",\"confirmed_raw_bytes\":\"%llu\","
+      "\"confirmed_chunk_count\":%u,\"confirmed_crc32\":\"%08X\",\"state\":\"ABANDONED\",\"reason\":\"%s\"}\n",
+      segmentIndex, name.c_str(), segmentSampleStart, lastStoredSampleEnd,
+      segmentBytes, segmentChunks, segmentCrc, reason) > 0;
+  segmentsFile.flush();
+  return ok;
+}
+
 bool prepareSegment(uint64_t sampleStart) {
   if (!rawFile && !openSegment(sampleStart)) return false;
   if (segmentChunks && segmentBytes + CHUNK_BYTES > SEGMENT_LIMIT) {
@@ -173,8 +195,53 @@ void failSd(const char *source) {
   state = State::FAILED;
 }
 
+bool injectR3Gap(Chunk &chunk) {
+  const uint32_t before = segmentIndex;
+  const uint32_t after = before + 1;
+  if (!abandonSegment("INJECTED_RAW_RETRY_FAILED")) {
+    failSd("segment_abandon");
+    return false;
+  }
+  const uint64_t sampleEnd = chunk.sampleStart + CHUNK_SAMPLES;
+  if (!gapsFile.printf(
+      "{\"record_type\":\"GAP\",\"gap_id\":\"1\",\"kind\":\"KNOWN_CHUNK_LOSS\","
+      "\"cause\":\"INJECTED_RAW_RETRY_FAILED\",\"sample_start\":\"%llu\",\"sample_end\":\"%llu\","
+      "\"lost_raw_samples\":\"%u\",\"chunk_seq\":\"%llu\",\"segment_before\":%u,"
+      "\"segment_after\":%u,\"recovered\":true}\n",
+      chunk.sampleStart, sampleEnd, CHUNK_SAMPLES, chunk.seq, before, after)) {
+    failSd("gap");
+    return false;
+  }
+  gapsFile.flush();
+  incidentsFile.printf(
+      "{\"incident\":\"SYNTHETIC-R3-1\",\"time_us\":\"%llu\",\"chunk_start\":\"%llu\","
+      "\"chunk_seq\":\"%llu\",\"requested\":%u,\"returned\":0,\"retry_returned\":0,"
+      "\"result\":\"SYNTHETIC_R3\",\"physical_io_attempted\":false}\n",
+      esp_timer_get_time() - startedUs, chunk.sampleStart, chunk.seq, CHUNK_BYTES);
+  incidentsFile.flush();
+  faultR3OnceConsumed = true;
+  ++faultInjected;
+  ++syntheticR3Count;
+  ++gapCount;
+  lostSamples += CHUNK_SAMPLES;
+  gapSampleStart = chunk.sampleStart;
+  gapSampleEnd = sampleEnd;
+  gapSegmentBefore = before;
+  gapSegmentAfter = after;
+  gapPreviousStoredEnd = lastStoredSampleEnd;
+  segmentIndex = after;
+  segmentBytes = segmentChunks = segmentCrc = 0;
+  Serial.printf("{\"type\":\"FAULT_INJECTED\",\"fault\":\"R3_ONCE\",\"chunk_seq\":\"%llu\","
+                "\"sample_start\":\"%llu\",\"sample_end\":\"%llu\",\"segment_before\":%u,"
+                "\"segment_after\":%u,\"physical_io_attempted\":false}\n",
+                chunk.seq, chunk.sampleStart, sampleEnd, before, after);
+  return true;
+}
+
 bool writeChunk(Chunk &chunk) {
   if (!prepareSegment(chunk.sampleStart)) { failSd(rawFile ? "other_segment_metadata" : "raw_initial"); return false; }
+  if (faultR3OnceChunk && !faultR3OnceConsumed && chunk.seq == faultR3OnceChunk)
+    return injectR3Gap(chunk);
   chunk.segmentOffset = segmentBytes;
   errno = 0;
   const uint64_t t0 = esp_timer_get_time();
@@ -233,6 +300,8 @@ bool writeChunk(Chunk &chunk) {
   segmentBytes += CHUNK_BYTES;
   ++segmentChunks; ++storedChunks;
   lastStoredSampleEnd = chunk.sampleStart + CHUNK_SAMPLES;
+  if (gapCount.load() && !gapResumeSampleStart && chunk.sampleStart >= gapSampleEnd)
+    gapResumeSampleStart = chunk.sampleStart;
   if (!writeCheckpoint()) { failSd("checkpoint"); return false; }
   return true;
 }
@@ -304,7 +373,13 @@ void writerTask(void *) {
 void resetCounters() {
   producedSamples = producedChunks = rawBytes = lostSamples = 0;
   poolExhaustion = sdErrors = r1Count = rawHandleFailures = retryFailures = reopenFailures = 0;
+  faultInjected = syntheticR3Count = gapCount = 0;
   lastSdErrorSource = "none";
+  completionStatus = "FAILED";
+  faultR3OnceConsumed = false;
+  gapSampleStart = gapSampleEnd = 0;
+  gapSegmentBefore = gapSegmentAfter = 0;
+  gapPreviousStoredEnd = gapResumeSampleStart = 0;
   firstRawFailureUs = 0;
   segmentIndex = segmentChunks = segmentCrc = sessionCrc = 0;
   segmentBytes = storedChunks = checkpointCount = lastStoredSampleEnd = 0;
@@ -329,7 +404,8 @@ bool startRun() {
   checkpointsFile = SD.open(sessionDir + "/checkpoints.jsonl", FILE_WRITE);
   incidentsFile = SD.open(sessionDir + "/sd-incidents.jsonl", FILE_WRITE);
   eventsFile = SD.open(sessionDir + "/events.jsonl", FILE_WRITE);
-  if (!mapFile || !segmentsFile || !indexFile || !checkpointsFile || !incidentsFile || !eventsFile) {
+  gapsFile = SD.open(sessionDir + "/gaps.jsonl", FILE_WRITE);
+  if (!mapFile || !segmentsFile || !indexFile || !checkpointsFile || !incidentsFile || !eventsFile || !gapsFile) {
     state = State::FAILED; return false;
   }
   File session = SD.open(sessionDir + "/session-start.json", FILE_WRITE);
@@ -359,11 +435,21 @@ void finalizeRun() {
   completeSegment();
   mapFile.flush(); mapFile.close(); segmentsFile.close(); indexFile.flush(); indexFile.close();
   checkpointsFile.flush(); checkpointsFile.close(); incidentsFile.flush(); incidentsFile.close();
-  eventsFile.flush(); eventsFile.close();
+  eventsFile.flush(); eventsFile.close(); gapsFile.flush(); gapsFile.close();
   closedUs = esp_timer_get_time();
   invariantOk = producedSamples.load() == (rawBytes.load() / 2ULL) + lostSamples.load();
-  finalPass = before != State::FAILED && sdErrors.load() == 0 && poolExhaustion.load() == 0 &&
-              lostSamples.load() == 0 && retryFailures.load() == 0 && invariantOk;
+  const bool faultExpected = faultR3OnceChunk != 0;
+  const bool exactInjectedGap = faultExpected && faultR3OnceConsumed && faultInjected.load() == 1 &&
+      syntheticR3Count.load() == 1 && gapCount.load() == 1 && lostSamples.load() == CHUNK_SAMPLES &&
+      gapSampleEnd - gapSampleStart == CHUNK_SAMPLES && gapSegmentAfter == gapSegmentBefore + 1 &&
+      gapPreviousStoredEnd == gapSampleStart && gapResumeSampleStart == gapSampleEnd;
+  const bool structurallyHealthy = before != State::FAILED && sdErrors.load() == 0 && poolExhaustion.load() == 0 &&
+      retryFailures.load() == 0 && invariantOk;
+  finalPass = structurallyHealthy && (faultExpected ? exactInjectedGap : lostSamples.load() == 0);
+  if (!structurallyHealthy || !finalPass) completionStatus = "FAILED";
+  else if (exactInjectedGap) completionStatus = "PARTIAL";
+  else if (r1Count.load()) completionStatus = "COMPLETE_WITH_RECOVERED_ERRORS";
+  else completionStatus = "COMPLETE";
   File result = SD.open(sessionDir + "/test-result.json", FILE_WRITE);
   if (result) {
     result.printf("{\"pass\":%s,\"schema_version\":\"s3-synthetic-raw-sd-bench-1.0\","
@@ -374,7 +460,11 @@ void finalizeRun() {
                   "\"write_us_min\":%u,\"write_us_avg\":%.3f,\"write_us_max\":%u,\"write_max_chunk\":%u,"
                   "\"checkpoint_us_min\":%u,\"checkpoint_us_avg\":%.3f,\"checkpoint_us_max\":%u,"
                   "\"checkpoint_max_chunk\":%u,\"writer_hold_us_max\":%u,\"writer_hold_max_chunk\":%u,"
-                  "\"session_crc32\":\"%08X\",\"invariant\":%s,\"closed\":true}\n",
+                  "\"session_crc32\":\"%08X\",\"invariant\":%s,\"closed\":true,"
+                  "\"lifecycle\":\"CLOSED\",\"completion_status\":\"%s\",\"resilience_pass\":%s,"
+                  "\"fault_injected\":%u,\"real_io_errors\":%u,\"synthetic_r3_count\":%u,"
+                  "\"gap_count\":%u,\"gap_sample_start\":\"%llu\",\"gap_sample_end\":\"%llu\","
+                  "\"gap_previous_stored_end\":\"%llu\",\"gap_resume_sample_start\":\"%llu\"}\n",
                   finalPass ? "true" : "false", closedUs - startedUs, producedSamples.load(), producedChunks.load(),
                   rawBytes.load(), rawHandleFailures.load(), r1Count.load(), retryFailures.load(), reopenFailures.load(),
                   sdErrors.load(), lostSamples.load(), poolExhaustion.load(), freeMin, pendingMax, readyMax,
@@ -383,15 +473,20 @@ void finalizeRun() {
                   checkpointCount ? checkpointLatencyMinUs : 0,
                   checkpointCount ? double(checkpointLatencyTotalUs) / checkpointCount : 0,
                   checkpointLatencyMaxUs, checkpointLatencyMaxChunk, writerHoldMaxUs, writerHoldMaxChunk,
-                  sessionCrc, invariantOk ? "true" : "false");
+                  sessionCrc, invariantOk ? "true" : "false", completionStatus,
+                  finalPass ? "true" : "false", faultInjected.load(), rawHandleFailures.load(),
+                  syntheticR3Count.load(), gapCount.load(), gapSampleStart, gapSampleEnd,
+                  gapPreviousStoredEnd, gapResumeSampleStart);
     result.flush(); result.close();
   } else {
     lastSdErrorSource = "finalization"; ++sdErrors; finalPass = false;
     Serial.printf("{\"type\":\"SD_ERROR\",\"source\":\"finalization\",\"count\":%u}\n", sdErrors.load());
   }
   state = finalPass ? State::CLOSED : State::FAILED;
-  Serial.printf("{\"type\":\"FINALIZATION\",\"state\":\"%s\",\"pass\":%s,\"crc32\":\"%08X\",\"invariant\":%s}\n",
-                stateName(state.load()), finalPass ? "true" : "false", sessionCrc, invariantOk ? "true" : "false");
+  Serial.printf("{\"type\":\"FINALIZATION\",\"state\":\"%s\",\"completion_status\":\"%s\","
+                "\"pass\":%s,\"crc32\":\"%08X\",\"invariant\":%s}\n",
+                stateName(state.load()), completionStatus, finalPass ? "true" : "false",
+                sessionCrc, invariantOk ? "true" : "false");
 }
 
 void printStatus() {
@@ -407,7 +502,10 @@ void printStatus() {
                 "\"checkpoint_us_min\":%u,\"checkpoint_us_avg\":%.3f,\"checkpoint_us_max\":%u,"
                 "\"writer_hold_us_max\":%u,\"first_raw_failure_us\":\"%llu\",\"heap_internal_free\":%u,\"heap_internal_min\":%u,"
                 "\"heap_internal_largest\":%u,\"heap_dma_free\":%u,\"heap_dma_min\":%u,"
-                "\"heap_dma_largest\":%u,\"crc32\":\"%08X\",\"invariant\":%s,\"pass\":%s}\n",
+                "\"heap_dma_largest\":%u,\"crc32\":\"%08X\",\"invariant\":%s,\"pass\":%s,"
+                "\"completion_status\":\"%s\",\"fault_r3_once_chunk\":\"%llu\","
+                "\"fault_consumed\":%s,\"fault_injected\":%u,\"real_io_errors\":%u,"
+                "\"synthetic_r3_count\":%u,\"gap_count\":%u}\n",
                 stateName(currentState), duration, producedChunks.load(), producedSamples.load(), rawBytes.load(),
                 r1Count.load(), rawHandleFailures.load(), retryFailures.load(), reopenFailures.load(),
                 sdErrors.load(), lastSdErrorSource, lostSamples.load(), poolExhaustion.load(), freeMin, pendingMax,
@@ -421,7 +519,9 @@ void printStatus() {
                 heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                 heap_caps_get_free_size(MALLOC_CAP_DMA), heap_caps_get_minimum_free_size(MALLOC_CAP_DMA),
                 heap_caps_get_largest_free_block(MALLOC_CAP_DMA), sessionCrc,
-                invariantOk ? "true" : "false", finalPass ? "true" : "false");
+                invariantOk ? "true" : "false", finalPass ? "true" : "false", completionStatus,
+                faultR3OnceChunk, faultR3OnceConsumed ? "true" : "false", faultInjected.load(),
+                rawHandleFailures.load(), syntheticR3Count.load(), gapCount.load());
 }
 
 const char *sdTypeName(sdcard_type_t type) {
@@ -451,6 +551,65 @@ void printSdInfo() {
                 SD.totalBytes(), SD.usedBytes());
 }
 
+void printFile(const String &path, const char *label) {
+  File file = SD.open(path, FILE_READ);
+  const uint64_t fileBytes = file ? uint64_t(file.size()) : 0;
+  Serial.printf("{\"type\":\"INSPECT_FILE\",\"name\":\"%s\",\"present\":%s,\"bytes\":\"%llu\"}\n",
+                label, file ? "true" : "false", fileBytes);
+  while (file && file.available()) Serial.write(file.read());
+  if (file) file.close();
+}
+
+void inspectSession(const String &folder, uint64_t targetSeq) {
+  if (state.load() == State::RUNNING || state.load() == State::STOPPING) {
+    Serial.println("ERROR INSPECT ACQUISITION_ACTIVE");
+    return;
+  }
+  const String base = "/S3RAW-" + folder;
+  const uint64_t targetStart = (targetSeq - 1) * uint64_t(CHUNK_SAMPLES);
+  uint32_t actualCrc = 0;
+  bool patternOk = true;
+  uint64_t actualBytes = 0;
+  for (uint32_t index = 0; index < 2; ++index) {
+    File file = SD.open(base + "/" + rawName(index), FILE_READ);
+    const uint64_t size = file ? file.size() : 0;
+    Serial.printf("{\"type\":\"INSPECT_RAW\",\"segment_index\":%u,\"present\":%s,\"bytes\":\"%llu\"}\n",
+                  index, file ? "true" : "false", size);
+    uint64_t sample = index == 0 ? 0 : targetStart + CHUNK_SAMPLES;
+    uint8_t buffer[512];
+    while (file && file.available()) {
+      const size_t count = file.read(buffer, sizeof(buffer));
+      actualCrc = esp_crc32_le(actualCrc, buffer, count);
+      actualBytes += count;
+      for (size_t offset = 0; offset + 1 < count; offset += 2, ++sample) {
+        const uint16_t value = uint16_t(buffer[offset]) | (uint16_t(buffer[offset + 1]) << 8);
+        if (value != syntheticSample(sample)) patternOk = false;
+      }
+    }
+    if (file) file.close();
+  }
+  File chunksFile = SD.open(base + "/chunks.jsonl", FILE_READ);
+  bool beforeFound = false, targetFound = false, afterFound = false;
+  const String beforeNeedle = "\"seq\":\"" + String(targetSeq - 1) + "\"";
+  const String targetNeedle = "\"seq\":\"" + String(targetSeq) + "\"";
+  const String afterNeedle = "\"seq\":\"" + String(targetSeq + 1) + "\"";
+  while (chunksFile && chunksFile.available()) {
+    const String line = chunksFile.readStringUntil('\n');
+    if (line.indexOf(beforeNeedle) >= 0) { beforeFound = true; Serial.println(line); }
+    if (line.indexOf(targetNeedle) >= 0) { targetFound = true; Serial.println(line); }
+    if (line.indexOf(afterNeedle) >= 0) { afterFound = true; Serial.println(line); }
+  }
+  if (chunksFile) chunksFile.close();
+  Serial.printf("{\"type\":\"INSPECT_SUMMARY\",\"raw_bytes\":\"%llu\",\"crc32\":\"%08X\","
+                "\"pattern_ok\":%s,\"chunk_before_present\":%s,\"chunk_target_present\":%s,"
+                "\"chunk_after_present\":%s}\n",
+                actualBytes, actualCrc, patternOk ? "true" : "false", beforeFound ? "true" : "false",
+                targetFound ? "true" : "false", afterFound ? "true" : "false");
+  printFile(base + "/gaps.jsonl", "gaps.jsonl");
+  printFile(base + "/segments.jsonl", "segments.jsonl");
+  printFile(base + "/test-result.json", "test-result.json");
+}
+
 #ifndef S3_NETWORK_ENABLED
 #define S3_NETWORK_ENABLED 1
 #endif
@@ -461,10 +620,30 @@ void handleCommand(String command) {
   command.trim(); command.toUpperCase();
   if (command == "STATUS") printStatus();
   else if (command == "SDINFO") printSdInfo();
+  else if (command.startsWith("INSPECT ")) {
+    const int separator = command.indexOf(' ', 8);
+    if (separator < 0) Serial.println("ERROR INSPECT ARGUMENTS");
+    else {
+      const String folder = command.substring(8, separator);
+      const uint64_t target = strtoull(command.substring(separator + 1).c_str(), nullptr, 10);
+      if (folder.length() != 8 || !target) Serial.println("ERROR INSPECT ARGUMENTS");
+      else inspectSession(folder, target);
+    }
+  }
 #if S3_NETWORK_ENABLED
   else if (command == "NETSTATUS") s3net::printDiagnostics();
 #endif
-  else if (command == "START") Serial.println(startRun() ? "OK START" : "ERROR START");
+  else if (command.startsWith("FAULT R3_ONCE ")) {
+    if (state.load() == State::RUNNING || state.load() == State::STOPPING) Serial.println("ERROR FAULT ACQUISITION_ACTIVE");
+    else {
+      const uint64_t target = strtoull(command.substring(14).c_str(), nullptr, 10);
+      if (!target) Serial.println("ERROR FAULT CHUNK_SEQ");
+      else { faultR3OnceChunk = target; faultR3OnceConsumed = false; Serial.printf("OK FAULT R3_ONCE %llu\n", target); }
+    }
+  } else if (command == "FAULT OFF") {
+    if (state.load() == State::RUNNING || state.load() == State::STOPPING) Serial.println("ERROR FAULT ACQUISITION_ACTIVE");
+    else { faultR3OnceChunk = 0; faultR3OnceConsumed = false; Serial.println("OK FAULT OFF"); }
+  } else if (command == "START") Serial.println(startRun() ? "OK START" : "ERROR START");
   else if (command == "STOP") {
     if (state.load() != State::RUNNING) Serial.println("ERROR STOP");
     else { finalizeRun(); Serial.println("OK STOP"); }

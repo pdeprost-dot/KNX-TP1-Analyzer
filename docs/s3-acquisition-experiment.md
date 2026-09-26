@@ -110,3 +110,34 @@ card type, raw capacity, sector count, sector size, and filesystem total/used
 space. CID and CSD are not exposed cleanly, so MID, OID, PNM, PRV, PSN, and MDT
 remain unavailable. No electronic identification of the actual manufacturer or
 commercial product may be inferred from the available fields.
+
+## Resilience V2 fault injection step 1
+
+This experiment is confined to the S3 bench and does not change the Field V1
+format. Serial command `FAULT R3_ONCE <chunk_seq>`, accepted only outside an
+acquisition, skips both physical RAW writes for one selected chunk. It records a
+distinct synthetic R3, abandons the confirmed prefix of the current segment,
+appends one half-open `KNOWN_CHUNK_LOSS` record to `gaps.jsonl`, releases the
+chunk to the pool, and resumes RAW in a new segment. `FAULT OFF` restores the
+historical path. Synthetic faults and physical I/O errors use separate counters.
+
+Validation used the Kingston 16 GB SDHC, STA-only reference configuration,
+normal power save/TX, and no AP, HTTP, mDNS, OTA, or intentional traffic.
+
+| Control | Duration | Chunks / samples | RAW bytes | Physical failure / R1 | Synthetic R3 / gaps | Loss / pool | CRC32 | Final result |
+|---|---:|---:|---:|---:|---:|---:|---|---|
+| A, injection disabled | 59.339088 s | 1,200 / 4,915,200 | 9,830,400 | 1 / 1 | 0 / 0 | 0 / 0 | `896C887A` | `CLOSED / COMPLETE_WITH_RECOVERED_ERRORS`, PASS |
+| B, `R3_ONCE 200` | 59.466475 s | 1,203 / 4,927,488 | 9,846,784 | 0 / 0 | 1 / 1 | 4,096 / 0 | `EF12C531` | `CLOSED / PARTIAL`, resilience PASS |
+
+Control B produced exactly one gap `[815104, 819200)`. Segment 0 was retained as
+`ABANDONED` with 199 confirmed chunks and 1,630,208 bytes; segment 1 resumed at
+sample 819,200 and contained 1,003 chunks / 8,216,576 bytes. Read-back from the
+physical SD confirmed that chunk 199 is present, chunk 200 is absent, chunk 201
+starts segment 1 at offset zero, the deterministic sample pattern is intact, and
+the recomputed stored-RAW CRC is `EF12C531`. The experimental invariant
+`timeline_samples = stored_raw_samples + lost_raw_samples` is true.
+
+The optional `INSPECT <session-suffix> <chunk_seq>` command is read-only,
+forbidden during acquisition, and reports the relevant manifests plus a physical
+RAW CRC/pattern check. No physical SD failure, unmount, SPI change, or FAT
+corruption is used by the fault injection.
