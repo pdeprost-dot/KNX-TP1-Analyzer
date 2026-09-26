@@ -424,6 +424,33 @@ void printStatus() {
                 invariantOk ? "true" : "false", finalPass ? "true" : "false");
 }
 
+const char *sdTypeName(sdcard_type_t type) {
+  switch (type) {
+    case CARD_MMC: return "MMC";
+    case CARD_SD: return "SDSC";
+    case CARD_SDHC: return "SDHC";
+    default: return "UNKNOWN";
+  }
+}
+
+void printSdInfo() {
+  const State currentState = state.load();
+  if (currentState == State::RUNNING || currentState == State::STOPPING) {
+    Serial.printf("{\"type\":\"SDINFO\",\"ok\":false,\"error\":\"acquisition_active\",\"state\":\"%s\"}\n",
+                  stateName(currentState));
+    return;
+  }
+  const sdcard_type_t cardType = SD.cardType();
+  Serial.printf("{\"type\":\"SDINFO\",\"ok\":%s,\"card_type_code\":%u,\"card_type\":\"%s\","
+                "\"capacity_bytes\":\"%llu\",\"sector_count\":%u,\"sector_size_bytes\":%u,"
+                "\"filesystem_total_bytes\":\"%llu\",\"filesystem_used_bytes\":\"%llu\","
+                "\"cid\":null,\"csd\":null,\"mid\":null,\"oid\":null,\"pnm\":null,"
+                "\"prv\":null,\"psn\":null,\"mdt\":null}\n",
+                sdReady && cardType != CARD_NONE ? "true" : "false", unsigned(cardType), sdTypeName(cardType),
+                SD.cardSize(), unsigned(SD.numSectors()), unsigned(SD.sectorSize()),
+                SD.totalBytes(), SD.usedBytes());
+}
+
 #ifndef S3_NETWORK_ENABLED
 #define S3_NETWORK_ENABLED 1
 #endif
@@ -433,6 +460,7 @@ namespace s3net { void printDiagnostics(); }
 void handleCommand(String command) {
   command.trim(); command.toUpperCase();
   if (command == "STATUS") printStatus();
+  else if (command == "SDINFO") printSdInfo();
 #if S3_NETWORK_ENABLED
   else if (command == "NETSTATUS") s3net::printDiagnostics();
 #endif

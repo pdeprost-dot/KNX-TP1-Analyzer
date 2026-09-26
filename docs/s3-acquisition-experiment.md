@@ -101,3 +101,12 @@ network traffic. No card was reformatted by the experiment.
   and verify recovery, loss, CRC/invariant, and finalization.
 - These results do not establish Wi-Fi as the physical cause and do not identify
   the internal or electrical mechanism responsible for EIO.
+
+## SDINFO diagnostic scope
+
+The serial `SDINFO` command is available only outside acquisition and uses the
+public Arduino-ESP32 `SD` API. With the current SD-over-SPI backend it reports
+card type, raw capacity, sector count, sector size, and filesystem total/used
+space. CID and CSD are not exposed cleanly, so MID, OID, PNM, PRV, PSN, and MDT
+remain unavailable. No electronic identification of the actual manufacturer or
+commercial product may be inferred from the available fields.
