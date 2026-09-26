@@ -141,3 +141,34 @@ The optional `INSPECT <session-suffix> <chunk_seq>` command is read-only,
 forbidden during acquisition, and reports the relevant manifests plus a physical
 RAW CRC/pattern check. No physical SD failure, unmount, SPI change, or FAT
 corruption is used by the fault injection.
+
+## Resilience V2 fault injection step 2
+
+Serial command `FAULT OUTAGE_ONCE <start_chunk> <duration_ms>` creates one
+logical RAW-storage outage without unmounting the SD or issuing physical writes
+for affected chunks. The writer moves through
+`HEALTHY -> OUTAGE -> RECOVERING -> HEALTHY`, aggregates one gap using constant
+memory, and immediately returns
+every discarded chunk to the pool. Recovery validates the open metadata files
+and starts the next stored chunk in a new RAW segment.
+
+Validation used `FAULT OUTAGE_ONCE 200 5000` with the same Kingston SDHC and
+STA-only reference configuration as Step 1.
+
+| Control | Duration | Chunks / samples | RAW bytes | Physical failures / R1 | Outage / recovery | Loss chunks / samples | Pool exhaustion | CRC32 | Final result |
+|---|---:|---:|---:|---:|---:|---:|---:|---|---|
+| A, injection disabled | 59.483120 s | 1,203 / 4,927,488 | 9,854,976 | 0 / 0 | 0 / 0 | 0 / 0 | 0 | `9F3738E9` | `CLOSED / COMPLETE`, PASS |
+| B, outage at chunk 200 for 5,000 ms | 59.370351 s | 1,202 / 4,923,392 | 9,011,200 | 0 / 0 | 1 / 1 | 102 / 417,792 | 0 | `4AD6CFEE` | `CLOSED / PARTIAL`, resilience PASS |
+
+The writer entered the outage at 9,896,137 us on chunk 200 / sample 815,104.
+It recovered at 14,902,567 us and resumed with chunk 302 / sample 1,232,896.
+The single durable gap is therefore `[815104, 1232896)`, covering chunks
+200 through 301 and lasting 5,006,430 us. Queue metrics remained healthy:
+free minimum 9, pending maximum 3, and ready maximum 2.
+
+Physical read-back confirmed segment 0 as `ABANDONED` with 199 chunks and
+1,630,208 bytes, segment 1 as `COMPLETE` with 901 chunks and 7,380,992 bytes,
+no manifest entry for any lost chunk, and chunk 302 at segment-1 offset zero.
+The deterministic pattern and recomputed stored-RAW CRC `4AD6CFEE` matched the
+result file. `4,923,392 = 9,011,200 / 2 + 417,792`; all outage, gap, recovery,
+pool, overlap, and resume invariants passed.
