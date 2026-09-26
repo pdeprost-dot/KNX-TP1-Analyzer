@@ -172,3 +172,37 @@ no manifest entry for any lost chunk, and chunk 302 at segment-1 offset zero.
 The deterministic pattern and recomputed stored-RAW CRC `4AD6CFEE` matched the
 result file. `4,923,392 = 9,011,200 / 2 + 417,792`; all outage, gap, recovery,
 pool, overlap, and resume invariants passed.
+
+## Resilience V2 fault injection step 3
+
+The first control run stopped before acquisition because the new persistent
+`storage-transitions.jsonl` handle exhausted the SD mount limit of eight files;
+opening `session-start.json` returned `vfs_fat: open: no free file descriptors`.
+The only corrective change was increasing the public `SD.begin()` `max_files`
+argument from 8 to 12 and reporting that value at boot. The repeated control
+then completed normally.
+
+`FAULT RECOVERY_ONCE <start_chunk> <failed_recoveries>` schedules recovery
+without blocking the writer. After each synthetic failure it sets a new monotonic
+deadline using 500, 1,000, 2,000, then at most 4,000 ms. Chunks received while
+waiting are accumulated into one gap and immediately returned to the pool.
+Every transition is appended to `storage-transitions.jsonl`.
+
+| Control | Duration | Chunks / samples | RAW bytes | Recovery attempts / failures / successes | Loss chunks / samples | Pool | CRC32 | Final result |
+|---|---:|---:|---:|---:|---:|---:|---|---|
+| A after `max_files=12` | 59.378496 s | 1,201 / 4,919,296 | 9,838,592 | 0 / 0 / 0 | 0 / 0 | 0 | `C991C67E` | `CLOSED / COMPLETE`, PASS |
+| B, `RECOVERY_ONCE 200 3` | 59.291630 s | 1,200 / 4,915,200 | 8,544,256 | 4 / 3 / 1 | 157 / 643,072 | 0 | `CC387A2A` | `CLOSED / PARTIAL`, resilience PASS |
+
+The outage began at 9,927,794 us on chunk 200 / sample 815,104. Recovery
+attempts occurred at 10,462,416; 11,498,720; 13,571,362; and 17,617,890 us.
+Measured waits were approximately 0.535, 1.036, 2.073, and 4.047 seconds.
+Attempts 1-3 failed synthetically; attempt 4 opened segment 1 and succeeded.
+RAW resumed at chunk 357 / sample 1,458,176. The single gap
+`[815104, 1458176)` lasted 7,754,976 us and covers chunks 200-356.
+
+Physical read-back confirmed segment 0 `ABANDONED` with 199 chunks / 1,630,208
+bytes and segment 1 `COMPLETE` with 844 chunks / 6,914,048 bytes. No lost chunk
+is referenced; chunk 357 starts segment 1 at offset zero. The stored pattern and
+recomputed CRC `CC387A2A` match. Queue minima/maxima were free 5, pending 7,
+ready 6, with no exhaustion, physical I/O error, or R1. All gap, accounting,
+backoff, recovery, CRC, and resume invariants passed.

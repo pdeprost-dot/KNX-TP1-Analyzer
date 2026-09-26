@@ -13,6 +13,7 @@ constexpr uint32_t CHUNK_SAMPLES = 4096;
 constexpr uint32_t CHUNK_BYTES = CHUNK_SAMPLES * sizeof(uint16_t);
 constexpr uint32_t CHUNK_COUNT = 12;
 constexpr uint32_t SD_HZ = 4000000;
+constexpr uint8_t SD_MAX_FILES = 12;
 constexpr uint32_t SD_CS = 21, SD_SCK = 7, SD_MISO = 8, SD_MOSI = 9;
 constexpr uint64_t SEGMENT_LIMIT = 512ULL * 1024ULL * 1024ULL;
 constexpr uint32_t CHECKPOINT_CHUNKS = 64;
@@ -36,7 +37,7 @@ SPIClass sdSpi(FSPI);
 Chunk *chunks[CHUNK_COUNT]{};
 QueueHandle_t freeQ = nullptr, readyQ = nullptr;
 TaskHandle_t producerHandle = nullptr, writerHandle = nullptr;
-File rawFile, mapFile, segmentsFile, indexFile, checkpointsFile, incidentsFile, eventsFile, gapsFile;
+File rawFile, mapFile, segmentsFile, indexFile, checkpointsFile, incidentsFile, eventsFile, gapsFile, transitionsFile;
 String sessionDir;
 std::atomic<State> state{State::IDLE};
 std::atomic<StorageState> storageState{StorageState::HEALTHY};
@@ -45,6 +46,8 @@ std::atomic<uint64_t> producedSamples{0}, producedChunks{0}, rawBytes{0}, lostSa
 std::atomic<uint32_t> poolExhaustion{0}, sdErrors{0}, r1Count{0}, rawHandleFailures{0}, retryFailures{0}, reopenFailures{0};
 std::atomic<uint32_t> faultInjected{0}, syntheticR3Count{0}, gapCount{0};
 std::atomic<uint32_t> storageOutageCount{0}, storageRecoveryCount{0}, lostChunksTotal{0};
+std::atomic<uint32_t> storageRecoveryAttempts{0}, storageRecoveryFailures{0}, storageRecoverySuccesses{0};
+std::atomic<uint32_t> syntheticRecoveryFailures{0};
 const char *lastSdErrorSource = "none";
 const char *completionStatus = "FAILED";
 uint64_t faultR3OnceChunk = 0;
@@ -52,12 +55,17 @@ bool faultR3OnceConsumed = false;
 uint64_t faultOutageStartChunk = 0;
 uint32_t faultOutageDurationMs = 0;
 bool faultOutageConsumed = false;
+uint64_t faultRecoveryStartChunk = 0;
+uint32_t faultRecoveryFailuresRequested = 0;
+bool faultRecoveryConsumed = false;
 uint64_t gapSampleStart = 0, gapSampleEnd = 0;
 uint32_t gapSegmentBefore = 0, gapSegmentAfter = 0;
 uint64_t gapPreviousStoredEnd = 0, gapResumeSampleStart = 0;
 uint64_t outageStartedUs = 0, outageEndedUs = 0;
 uint64_t firstLostChunkSeq = 0, lastLostChunkSeq = 0;
 uint64_t longestGapUs = 0, cumulativeStorageOutageUs = 0;
+uint64_t nextRecoveryDueUs = 0;
+uint32_t currentRecoveryBackoffMs = 0, maxRecoveryBackoffMs = 0;
 uint64_t firstRawFailureUs = 0;
 uint64_t startedUs = 0, closedUs = 0, segmentBytes = 0, segmentSampleStart = 0;
 uint32_t segmentIndex = 0, segmentChunks = 0, segmentCrc = 0, sessionCrc = 0;
@@ -267,6 +275,22 @@ bool discardOutageChunk(Chunk &chunk) {
   return true;
 }
 
+bool logStorageTransition(const char *from, const char *to, const Chunk &chunk, const char *reason,
+                          uint32_t attempt, const char *result, uint32_t backoffMs) {
+  const uint64_t nowUs = esp_timer_get_time() - startedUs;
+  const bool ok = transitionsFile.printf(
+      "{\"record_type\":\"STORAGE_TRANSITION\",\"time_us\":\"%llu\",\"sample\":\"%llu\","
+      "\"chunk_seq\":\"%llu\",\"from\":\"%s\",\"to\":\"%s\",\"reason\":\"%s\","
+      "\"attempt\":%u,\"result\":\"%s\",\"backoff_ms\":%u}\n",
+      nowUs, chunk.sampleStart, chunk.seq, from, to, reason, attempt, result, backoffMs) > 0;
+  transitionsFile.flush();
+  Serial.printf("{\"type\":\"STORAGE_TRANSITION\",\"time_us\":\"%llu\",\"sample\":\"%llu\","
+                "\"chunk_seq\":\"%llu\",\"from\":\"%s\",\"to\":\"%s\",\"reason\":\"%s\","
+                "\"attempt\":%u,\"result\":\"%s\",\"backoff_ms\":%u}\n",
+                nowUs, chunk.sampleStart, chunk.seq, from, to, reason, attempt, result, backoffMs);
+  return ok;
+}
+
 bool beginInjectedOutage(Chunk &chunk) {
   if (!abandonSegment("INJECTED_STORAGE_OUTAGE")) {
     failSd("segment_abandon");
@@ -280,6 +304,11 @@ bool beginInjectedOutage(Chunk &chunk) {
   gapPreviousStoredEnd = lastStoredSampleEnd;
   outageStartedUs = esp_timer_get_time() - startedUs;
   storageState = StorageState::OUTAGE;
+  if (!logStorageTransition("HEALTHY", "OUTAGE", chunk, "INJECTED_STORAGE_OUTAGE", 0, "started",
+                            faultOutageDurationMs)) {
+    failSd("storage_transition");
+    return false;
+  }
   Serial.printf("{\"type\":\"STORAGE_OUTAGE_START\",\"chunk_seq\":\"%llu\","
                 "\"sample_start\":\"%llu\",\"time_start_us\":\"%llu\",\"duration_ms\":%u,"
                 "\"segment_before\":%u}\n",
@@ -287,23 +316,56 @@ bool beginInjectedOutage(Chunk &chunk) {
   return discardOutageChunk(chunk);
 }
 
-bool recoverInjectedOutage(Chunk &resumeChunk) {
+bool beginInjectedRecoveryOutage(Chunk &chunk) {
+  if (!abandonSegment("INJECTED_RECOVERY_OUTAGE")) {
+    failSd("segment_abandon");
+    return false;
+  }
+  faultRecoveryConsumed = true;
+  ++faultInjected;
+  ++storageOutageCount;
+  gapSegmentBefore = segmentIndex;
+  gapSegmentAfter = segmentIndex + 1;
+  gapPreviousStoredEnd = lastStoredSampleEnd;
+  outageStartedUs = esp_timer_get_time() - startedUs;
+  currentRecoveryBackoffMs = 500;
+  maxRecoveryBackoffMs = 500;
+  nextRecoveryDueUs = outageStartedUs + uint64_t(currentRecoveryBackoffMs) * 1000ULL;
+  storageState = StorageState::OUTAGE;
+  if (!logStorageTransition("HEALTHY", "OUTAGE", chunk, "INJECTED_RECOVERY_OUTAGE", 0, "started",
+                            currentRecoveryBackoffMs)) {
+    failSd("storage_transition");
+    return false;
+  }
+  return discardOutageChunk(chunk);
+}
+
+bool recoverInjectedOutage(Chunk &resumeChunk, const char *cause, uint32_t attempts, uint32_t failures) {
   storageState = StorageState::RECOVERING;
-  outageEndedUs = esp_timer_get_time() - startedUs;
-  const uint64_t durationUs = outageEndedUs - outageStartedUs;
-  if (!mapFile || !segmentsFile || !indexFile || !checkpointsFile || !incidentsFile || !eventsFile || !gapsFile) {
+  if (!mapFile || !segmentsFile || !indexFile || !checkpointsFile || !incidentsFile || !eventsFile || !gapsFile ||
+      !transitionsFile || !flushMap()) {
     failSd("outage_recovery_files");
     return false;
   }
+  segmentIndex = gapSegmentAfter;
+  segmentBytes = segmentChunks = segmentCrc = 0;
+  if (!openSegment(resumeChunk.sampleStart)) {
+    failSd("outage_recovery_segment");
+    return false;
+  }
+  outageEndedUs = esp_timer_get_time() - startedUs;
+  const uint64_t durationUs = outageEndedUs - outageStartedUs;
   if (!gapsFile.printf(
       "{\"record_type\":\"GAP\",\"gap_id\":\"1\",\"kind\":\"STORAGE_OUTAGE\","
-      "\"cause\":\"INJECTED_STORAGE_OUTAGE\",\"sample_start\":\"%llu\",\"sample_end\":\"%llu\","
+      "\"cause\":\"%s\",\"sample_start\":\"%llu\",\"sample_end\":\"%llu\","
       "\"lost_raw_samples\":\"%llu\",\"time_start_us\":\"%llu\",\"time_end_us\":\"%llu\","
       "\"duration_us\":\"%llu\",\"first_lost_chunk_seq\":\"%llu\","
       "\"last_lost_chunk_seq\":\"%llu\",\"lost_chunk_count\":\"%u\","
-      "\"segment_before\":%u,\"segment_after\":%u,\"recovered\":true}\n",
-      gapSampleStart, gapSampleEnd, lostSamples.load(), outageStartedUs, outageEndedUs, durationUs,
-      firstLostChunkSeq, lastLostChunkSeq, lostChunksTotal.load(), gapSegmentBefore, gapSegmentAfter)) {
+      "\"segment_before\":%u,\"segment_after\":%u,\"recovered\":true,"
+      "\"recovery_attempts\":%u,\"failed_recovery_attempts\":%u}\n",
+      cause, gapSampleStart, gapSampleEnd, lostSamples.load(), outageStartedUs, outageEndedUs, durationUs,
+      firstLostChunkSeq, lastLostChunkSeq, lostChunksTotal.load(), gapSegmentBefore, gapSegmentAfter,
+      attempts, failures)) {
     failSd("gap");
     return false;
   }
@@ -316,12 +378,16 @@ bool recoverInjectedOutage(Chunk &resumeChunk) {
   incidentsFile.flush();
   ++gapCount;
   ++storageRecoveryCount;
+  ++storageRecoverySuccesses;
   cumulativeStorageOutageUs += durationUs;
   if (durationUs > longestGapUs) longestGapUs = durationUs;
-  segmentIndex = gapSegmentAfter;
-  segmentBytes = segmentChunks = segmentCrc = 0;
   gapResumeSampleStart = resumeChunk.sampleStart;
+  if (!logStorageTransition("RECOVERING", "HEALTHY", resumeChunk, cause, attempts, "success", 0)) {
+    failSd("storage_transition");
+    return false;
+  }
   storageState = StorageState::HEALTHY;
+  currentRecoveryBackoffMs = 0;
   Serial.printf("{\"type\":\"STORAGE_OUTAGE_RECOVERED\",\"resume_chunk_seq\":\"%llu\","
                 "\"resume_sample_start\":\"%llu\",\"time_end_us\":\"%llu\",\"duration_us\":\"%llu\","
                 "\"lost_chunk_count\":%u,\"lost_raw_samples\":\"%llu\",\"segment_after\":%u}\n",
@@ -330,13 +396,54 @@ bool recoverInjectedOutage(Chunk &resumeChunk) {
   return true;
 }
 
+bool attemptInjectedRecovery(Chunk &chunk) {
+  const uint32_t attempt = ++storageRecoveryAttempts;
+  storageState = StorageState::RECOVERING;
+  if (!logStorageTransition("OUTAGE", "RECOVERING", chunk, "INJECTED_RECOVERY_OUTAGE", attempt,
+                            "attempting", currentRecoveryBackoffMs)) {
+    failSd("storage_transition");
+    return false;
+  }
+  if (attempt <= faultRecoveryFailuresRequested) {
+    ++storageRecoveryFailures;
+    ++syntheticRecoveryFailures;
+    const uint32_t doubledBackoff = currentRecoveryBackoffMs * 2U;
+    const uint32_t nextBackoff = doubledBackoff < 4000U ? doubledBackoff : 4000U;
+    if (nextBackoff > maxRecoveryBackoffMs) maxRecoveryBackoffMs = nextBackoff;
+    if (!logStorageTransition("RECOVERING", "OUTAGE", chunk, "INJECTED_RECOVERY_OUTAGE", attempt,
+                              "synthetic_failure", nextBackoff)) {
+      failSd("storage_transition");
+      return false;
+    }
+    storageState = StorageState::OUTAGE;
+    currentRecoveryBackoffMs = nextBackoff;
+    nextRecoveryDueUs = (esp_timer_get_time() - startedUs) + uint64_t(nextBackoff) * 1000ULL;
+    return discardOutageChunk(chunk);
+  }
+  return recoverInjectedOutage(chunk, "INJECTED_RECOVERY_OUTAGE", attempt, storageRecoveryFailures.load());
+}
+
 bool writeChunk(Chunk &chunk) {
   if (storageState.load() == StorageState::OUTAGE) {
     const uint64_t nowUs = esp_timer_get_time() - startedUs;
-    if (nowUs - outageStartedUs < uint64_t(faultOutageDurationMs) * 1000ULL)
-      return discardOutageChunk(chunk);
-    if (!recoverInjectedOutage(chunk)) return false;
+    if (faultRecoveryConsumed) {
+      if (nowUs < nextRecoveryDueUs) return discardOutageChunk(chunk);
+      if (!attemptInjectedRecovery(chunk)) return false;
+      if (storageState.load() == StorageState::OUTAGE) return true;
+    } else {
+      if (nowUs - outageStartedUs < uint64_t(faultOutageDurationMs) * 1000ULL)
+        return discardOutageChunk(chunk);
+      ++storageRecoveryAttempts;
+      if (!logStorageTransition("OUTAGE", "RECOVERING", chunk, "INJECTED_STORAGE_OUTAGE", 1,
+                                "attempting", faultOutageDurationMs)) {
+        failSd("storage_transition");
+        return false;
+      }
+      if (!recoverInjectedOutage(chunk, "INJECTED_STORAGE_OUTAGE", 1, 0)) return false;
+    }
   }
+  if (faultRecoveryStartChunk && !faultRecoveryConsumed && chunk.seq == faultRecoveryStartChunk)
+    return beginInjectedRecoveryOutage(chunk);
   if (faultOutageStartChunk && !faultOutageConsumed && chunk.seq == faultOutageStartChunk)
     return beginInjectedOutage(chunk);
   if (!prepareSegment(chunk.sampleStart)) { failSd(rawFile ? "other_segment_metadata" : "raw_initial"); return false; }
@@ -475,17 +582,21 @@ void resetCounters() {
   poolExhaustion = sdErrors = r1Count = rawHandleFailures = retryFailures = reopenFailures = 0;
   faultInjected = syntheticR3Count = gapCount = 0;
   storageOutageCount = storageRecoveryCount = lostChunksTotal = 0;
+  storageRecoveryAttempts = storageRecoveryFailures = storageRecoverySuccesses = syntheticRecoveryFailures = 0;
   storageState = StorageState::HEALTHY;
   lastSdErrorSource = "none";
   completionStatus = "FAILED";
   faultR3OnceConsumed = false;
   faultOutageConsumed = false;
+  faultRecoveryConsumed = false;
   gapSampleStart = gapSampleEnd = 0;
   gapSegmentBefore = gapSegmentAfter = 0;
   gapPreviousStoredEnd = gapResumeSampleStart = 0;
   outageStartedUs = outageEndedUs = 0;
   firstLostChunkSeq = lastLostChunkSeq = 0;
   longestGapUs = cumulativeStorageOutageUs = 0;
+  nextRecoveryDueUs = 0;
+  currentRecoveryBackoffMs = maxRecoveryBackoffMs = 0;
   firstRawFailureUs = 0;
   segmentIndex = segmentChunks = segmentCrc = sessionCrc = 0;
   segmentBytes = storedChunks = checkpointCount = lastStoredSampleEnd = 0;
@@ -511,7 +622,9 @@ bool startRun() {
   incidentsFile = SD.open(sessionDir + "/sd-incidents.jsonl", FILE_WRITE);
   eventsFile = SD.open(sessionDir + "/events.jsonl", FILE_WRITE);
   gapsFile = SD.open(sessionDir + "/gaps.jsonl", FILE_WRITE);
-  if (!mapFile || !segmentsFile || !indexFile || !checkpointsFile || !incidentsFile || !eventsFile || !gapsFile) {
+  transitionsFile = SD.open(sessionDir + "/storage-transitions.jsonl", FILE_WRITE);
+  if (!mapFile || !segmentsFile || !indexFile || !checkpointsFile || !incidentsFile || !eventsFile || !gapsFile ||
+      !transitionsFile) {
     state = State::FAILED; return false;
   }
   File session = SD.open(sessionDir + "/session-start.json", FILE_WRITE);
@@ -542,11 +655,13 @@ void finalizeRun() {
   mapFile.flush(); mapFile.close(); segmentsFile.close(); indexFile.flush(); indexFile.close();
   checkpointsFile.flush(); checkpointsFile.close(); incidentsFile.flush(); incidentsFile.close();
   eventsFile.flush(); eventsFile.close(); gapsFile.flush(); gapsFile.close();
+  transitionsFile.flush(); transitionsFile.close();
   closedUs = esp_timer_get_time();
   invariantOk = producedSamples.load() == (rawBytes.load() / 2ULL) + lostSamples.load();
   const bool r3FaultExpected = faultR3OnceChunk != 0;
   const bool outageFaultExpected = faultOutageStartChunk != 0;
-  const bool faultExpected = r3FaultExpected || outageFaultExpected;
+  const bool recoveryFaultExpected = faultRecoveryStartChunk != 0;
+  const bool faultExpected = r3FaultExpected || outageFaultExpected || recoveryFaultExpected;
   const bool exactInjectedR3Gap = r3FaultExpected && !outageFaultExpected && faultR3OnceConsumed && faultInjected.load() == 1 &&
       syntheticR3Count.load() == 1 && gapCount.load() == 1 && lostSamples.load() == CHUNK_SAMPLES &&
       gapSampleEnd - gapSampleStart == CHUNK_SAMPLES && gapSegmentAfter == gapSegmentBefore + 1 &&
@@ -556,11 +671,20 @@ void finalizeRun() {
       gapCount.load() == 1 && lostChunksTotal.load() > 0 && lostSamples.load() == uint64_t(lostChunksTotal.load()) * CHUNK_SAMPLES &&
       gapSampleEnd - gapSampleStart == lostSamples.load() && gapSegmentAfter == gapSegmentBefore + 1 &&
       gapPreviousStoredEnd == gapSampleStart && gapResumeSampleStart == gapSampleEnd;
+  const bool exactInjectedRecovery = recoveryFaultExpected && !r3FaultExpected && !outageFaultExpected &&
+      faultRecoveryConsumed && faultInjected.load() == 1 && storageOutageCount.load() == 1 &&
+      storageRecoveryAttempts.load() == faultRecoveryFailuresRequested + 1 &&
+      storageRecoveryFailures.load() == faultRecoveryFailuresRequested && syntheticRecoveryFailures.load() == faultRecoveryFailuresRequested &&
+      storageRecoverySuccesses.load() == 1 && storageRecoveryCount.load() == 1 && storageState.load() == StorageState::HEALTHY &&
+      gapCount.load() == 1 && lostChunksTotal.load() > 0 && lostSamples.load() == uint64_t(lostChunksTotal.load()) * CHUNK_SAMPLES &&
+      gapSampleEnd - gapSampleStart == lostSamples.load() && gapSegmentAfter == gapSegmentBefore + 1 &&
+      gapPreviousStoredEnd == gapSampleStart && gapResumeSampleStart == gapSampleEnd && maxRecoveryBackoffMs <= 4000;
   const bool structurallyHealthy = before != State::FAILED && sdErrors.load() == 0 && poolExhaustion.load() == 0 &&
       retryFailures.load() == 0 && invariantOk;
-  finalPass = structurallyHealthy && (faultExpected ? (exactInjectedR3Gap || exactInjectedOutage) : lostSamples.load() == 0);
+  finalPass = structurallyHealthy &&
+      (faultExpected ? (exactInjectedR3Gap || exactInjectedOutage || exactInjectedRecovery) : lostSamples.load() == 0);
   if (!structurallyHealthy || !finalPass) completionStatus = "FAILED";
-  else if (exactInjectedR3Gap || exactInjectedOutage) completionStatus = "PARTIAL";
+  else if (exactInjectedR3Gap || exactInjectedOutage || exactInjectedRecovery) completionStatus = "PARTIAL";
   else if (r1Count.load()) completionStatus = "COMPLETE_WITH_RECOVERED_ERRORS";
   else completionStatus = "COMPLETE";
   File result = SD.open(sessionDir + "/test-result.json", FILE_WRITE);
@@ -579,8 +703,12 @@ void finalizeRun() {
                   "\"gap_count\":%u,\"gap_sample_start\":\"%llu\",\"gap_sample_end\":\"%llu\","
                   "\"gap_previous_stored_end\":\"%llu\",\"gap_resume_sample_start\":\"%llu\","
                   "\"storage_outage_count\":%u,\"storage_recovery_count\":%u,\"storage_state\":\"%s\","
+                  "\"storage_recovery_attempts\":%u,\"storage_recovery_failures\":%u,"
+                  "\"storage_recovery_successes\":%u,\"synthetic_recovery_failures\":%u,"
+                  "\"current_recovery_backoff_ms\":%u,\"max_recovery_backoff_ms\":%u,"
                   "\"lost_chunks_total\":%u,\"longest_gap_us\":\"%llu\","
-                  "\"cumulative_storage_outage_us\":\"%llu\",\"fault_outage_injected\":%u}\n",
+                  "\"cumulative_storage_outage_us\":\"%llu\",\"fault_outage_injected\":%u,"
+                  "\"fault_recovery_injected\":%u}\n",
                   finalPass ? "true" : "false", closedUs - startedUs, producedSamples.load(), producedChunks.load(),
                   rawBytes.load(), rawHandleFailures.load(), r1Count.load(), retryFailures.load(), reopenFailures.load(),
                   sdErrors.load(), lostSamples.load(), poolExhaustion.load(), freeMin, pendingMax, readyMax,
@@ -593,8 +721,10 @@ void finalizeRun() {
                   finalPass ? "true" : "false", faultInjected.load(), rawHandleFailures.load(),
                   syntheticR3Count.load(), gapCount.load(), gapSampleStart, gapSampleEnd,
                   gapPreviousStoredEnd, gapResumeSampleStart, storageOutageCount.load(), storageRecoveryCount.load(),
-                  storageStateName(storageState.load()), lostChunksTotal.load(), longestGapUs,
-                  cumulativeStorageOutageUs, faultOutageConsumed ? 1U : 0U);
+                  storageStateName(storageState.load()), storageRecoveryAttempts.load(), storageRecoveryFailures.load(),
+                  storageRecoverySuccesses.load(), syntheticRecoveryFailures.load(), currentRecoveryBackoffMs,
+                  maxRecoveryBackoffMs, lostChunksTotal.load(), longestGapUs, cumulativeStorageOutageUs,
+                  faultOutageConsumed ? 1U : 0U, faultRecoveryConsumed ? 1U : 0U);
     result.flush(); result.close();
   } else {
     lastSdErrorSource = "finalization"; ++sdErrors; finalPass = false;
@@ -626,6 +756,11 @@ void printStatus() {
                 "\"synthetic_r3_count\":%u,\"gap_count\":%u,\"storage_state\":\"%s\","
                 "\"fault_outage_start_chunk\":\"%llu\",\"fault_outage_duration_ms\":%u,"
                 "\"fault_outage_consumed\":%s,\"storage_outage_count\":%u,\"storage_recovery_count\":%u,"
+                "\"fault_recovery_start_chunk\":\"%llu\",\"fault_recovery_failures_requested\":%u,"
+                "\"fault_recovery_consumed\":%s,\"storage_recovery_attempts\":%u,"
+                "\"storage_recovery_failures\":%u,\"storage_recovery_successes\":%u,"
+                "\"synthetic_recovery_failures\":%u,\"current_recovery_backoff_ms\":%u,"
+                "\"max_recovery_backoff_ms\":%u,"
                 "\"lost_chunks_total\":%u,\"longest_gap_us\":\"%llu\","
                 "\"cumulative_storage_outage_us\":\"%llu\"}\n",
                 stateName(currentState), duration, producedChunks.load(), producedSamples.load(), rawBytes.load(),
@@ -645,7 +780,11 @@ void printStatus() {
                 faultR3OnceChunk, faultR3OnceConsumed ? "true" : "false", faultInjected.load(),
                 rawHandleFailures.load(), syntheticR3Count.load(), gapCount.load(), storageStateName(storageState.load()),
                 faultOutageStartChunk, faultOutageDurationMs, faultOutageConsumed ? "true" : "false",
-                storageOutageCount.load(), storageRecoveryCount.load(), lostChunksTotal.load(), longestGapUs,
+                storageOutageCount.load(), storageRecoveryCount.load(), faultRecoveryStartChunk,
+                faultRecoveryFailuresRequested, faultRecoveryConsumed ? "true" : "false",
+                storageRecoveryAttempts.load(), storageRecoveryFailures.load(), storageRecoverySuccesses.load(),
+                syntheticRecoveryFailures.load(), currentRecoveryBackoffMs, maxRecoveryBackoffMs,
+                lostChunksTotal.load(), longestGapUs,
                 cumulativeStorageOutageUs);
 }
 
@@ -747,6 +886,7 @@ void inspectSession(const String &folder, uint64_t targetSeq) {
                 gapChunkFound ? "true" : "false", afterFound ? "true" : "false", inspectedFirstLost,
                 inspectedLastLost, inspectedGapStart, inspectedGapEnd);
   printFile(base + "/gaps.jsonl", "gaps.jsonl");
+  printFile(base + "/storage-transitions.jsonl", "storage-transitions.jsonl");
   printFile(base + "/segments.jsonl", "segments.jsonl");
   printFile(base + "/test-result.json", "test-result.json");
 }
@@ -782,7 +922,22 @@ void handleCommand(String command) {
       else {
         faultR3OnceChunk = target; faultR3OnceConsumed = false;
         faultOutageStartChunk = 0; faultOutageDurationMs = 0; faultOutageConsumed = false;
+        faultRecoveryStartChunk = 0; faultRecoveryFailuresRequested = 0; faultRecoveryConsumed = false;
         Serial.printf("OK FAULT R3_ONCE %llu\n", target);
+      }
+    }
+  } else if (command.startsWith("FAULT RECOVERY_ONCE ")) {
+    if (state.load() == State::RUNNING || state.load() == State::STOPPING) Serial.println("ERROR FAULT ACQUISITION_ACTIVE");
+    else {
+      const int separator = command.indexOf(' ', 20);
+      const uint64_t target = separator > 0 ? strtoull(command.substring(20, separator).c_str(), nullptr, 10) : 0;
+      const uint32_t failures = separator > 0 ? strtoul(command.substring(separator + 1).c_str(), nullptr, 10) : 0;
+      if (!target || !failures) Serial.println("ERROR FAULT RECOVERY_ARGUMENTS");
+      else {
+        faultRecoveryStartChunk = target; faultRecoveryFailuresRequested = failures; faultRecoveryConsumed = false;
+        faultR3OnceChunk = 0; faultR3OnceConsumed = false;
+        faultOutageStartChunk = 0; faultOutageDurationMs = 0; faultOutageConsumed = false;
+        Serial.printf("OK FAULT RECOVERY_ONCE %llu %u\n", target, failures);
       }
     }
   } else if (command.startsWith("FAULT OUTAGE_ONCE ")) {
@@ -795,6 +950,7 @@ void handleCommand(String command) {
       else {
         faultOutageStartChunk = target; faultOutageDurationMs = durationMs; faultOutageConsumed = false;
         faultR3OnceChunk = 0; faultR3OnceConsumed = false;
+        faultRecoveryStartChunk = 0; faultRecoveryFailuresRequested = 0; faultRecoveryConsumed = false;
         Serial.printf("OK FAULT OUTAGE_ONCE %llu %u\n", target, durationMs);
       }
     }
@@ -803,6 +959,7 @@ void handleCommand(String command) {
     else {
       faultR3OnceChunk = 0; faultR3OnceConsumed = false;
       faultOutageStartChunk = 0; faultOutageDurationMs = 0; faultOutageConsumed = false;
+      faultRecoveryStartChunk = 0; faultRecoveryFailuresRequested = 0; faultRecoveryConsumed = false;
       Serial.println("OK FAULT OFF");
     }
   } else if (command == "START") Serial.println(startRun() ? "OK START" : "ERROR START");
@@ -820,7 +977,7 @@ void setup() {
   Serial.begin(115200);
   delay(1200);
   sdSpi.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
-  sdReady = SD.begin(SD_CS, sdSpi, SD_HZ, "/sd", 8);
+  sdReady = SD.begin(SD_CS, sdSpi, SD_HZ, "/sd", SD_MAX_FILES);
   freeQ = xQueueCreate(CHUNK_COUNT, sizeof(Chunk *));
   readyQ = xQueueCreate(CHUNK_COUNT, sizeof(Chunk *));
   bool poolReady = freeQ && readyQ;
@@ -834,9 +991,10 @@ void setup() {
     xTaskCreatePinnedToCore(writerTask, "writer", 4096, nullptr, S3_WRITER_PRIORITY, &writerHandle, S3_WRITER_CORE);
   }
   Serial.printf("{\"type\":\"BOOT\",\"board\":\"XIAO_ESP32S3_SENSE\",\"sd\":%s,"
-                "\"card_type\":%u,\"pool\":%s,\"camera\":false,\"microphone\":false,"
+                "\"card_type\":%u,\"sd_max_files\":%u,\"pool\":%s,\"camera\":false,\"microphone\":false,"
                 "\"wifi\":false,\"sample_rate_hz\":%u}\n",
-                sdReady ? "true" : "false", unsigned(SD.cardType()), poolReady ? "true" : "false", SAMPLE_RATE);
+                sdReady ? "true" : "false", unsigned(SD.cardType()), unsigned(SD_MAX_FILES),
+                poolReady ? "true" : "false", SAMPLE_RATE);
   if (!sdReady || !poolReady) state = State::FAILED;
 #if S3_NETWORK_ENABLED
   s3net::begin();
