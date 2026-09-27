@@ -6,8 +6,10 @@
 #include <atomic>
 #include <errno.h>
 
+#define S3_NETWORK_ENABLED 1
+
 // Experimental XIAO ESP32-S3 Sense RAW/SD bench. No ADC, KNX, display,
-// touch, Wi-Fi, camera, or microphone is initialized by this sketch.
+// touch, camera, or microphone is initialized. Network use is experimental.
 constexpr uint32_t SAMPLE_RATE = 83333;
 constexpr uint32_t CHUNK_SAMPLES = 4096;
 constexpr uint32_t CHUNK_BYTES = CHUNK_SAMPLES * sizeof(uint16_t);
@@ -107,6 +109,12 @@ const char *storageStateName(StorageState value) {
     default: return "RECOVERING";
   }
 }
+
+#if S3_NETWORK_ENABLED
+namespace s3net {
+bool stopForCapture();
+}
+#endif
 
 String rawName(uint32_t index) {
   char value[24];
@@ -962,7 +970,12 @@ void handleCommand(String command) {
       faultRecoveryStartChunk = 0; faultRecoveryFailuresRequested = 0; faultRecoveryConsumed = false;
       Serial.println("OK FAULT OFF");
     }
-  } else if (command == "START") Serial.println(startRun() ? "OK START" : "ERROR START");
+  } else if (command == "START") {
+#if S3_NETWORK_ENABLED
+    if (!s3net::stopForCapture()) { Serial.println("ERROR START WIFI_NOT_OFF"); return; }
+#endif
+    Serial.println(startRun() ? "OK START" : "ERROR START");
+  }
   else if (command == "STOP") {
     if (state.load() != State::RUNNING) Serial.println("ERROR STOP");
     else { finalizeRun(); Serial.println("OK STOP"); }

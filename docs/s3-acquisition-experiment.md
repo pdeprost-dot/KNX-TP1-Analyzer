@@ -206,3 +206,34 @@ is referenced; chunk 357 starts segment 1 at offset zero. The stored pattern and
 recomputed CRC `CC387A2A` match. Queue minima/maxima were free 5, pending 7,
 ready 6, with no exhaustion, physical I/O error, or R1. All gap, accounting,
 backoff, recovery, CRC, and resume invariants passed.
+
+## Wi-Fi-off capture lifecycle validation
+
+Earlier STA-associated tests reproduced frequent RAW write `EIO` incidents,
+including R1 recoveries and terminal R3 failures, both with HTTP polling and
+with no intentional HTTP traffic. Those measurements did not identify the
+physical mechanism responsible for the failures.
+
+The experimental bench was then changed only around the acquisition lifecycle:
+HTTP is stopped, STA is disconnected, and effective mode `WIFI_OFF` is confirmed
+before synthetic acquisition starts. Network service is restored only after
+storage finalization reaches `CLOSED`. The Kingston 16 GB SDHC, RAW/SD pipeline,
+Resilience V2 behavior, sample rate, chunks, queues, pool, checkpoints, and
+recovery mechanisms remained unchanged.
+
+| Cycle | Duration | Chunks / samples | RAW bytes | EIO / R1 / R3 | Loss / gaps / pool | CRC32 | Final result | Network after `CLOSED` |
+|---|---:|---:|---:|---:|---:|---|---|---|
+| 1 | 599.265067 s | 12,142 / 49,733,632 | 99,467,264 | 0 / 0 / 0 | 0 / 0 / 0 | `823BC15F` | `CLOSED / COMPLETE`, PASS | STA restored; HTTP 200 |
+| 2 | 599.270632 s | 12,141 / 49,729,536 | 99,459,072 | 0 / 0 / 0 | 0 / 0 / 0 | `8D8318E3` | `CLOSED / COMPLETE`, PASS | STA restored; HTTP 200 |
+| 3 | 599.235840 s | 12,142 / 49,733,632 | 99,467,264 | 0 / 0 / 0 | 0 / 0 / 0 | `823BC15F` | `CLOSED / COMPLETE`, PASS | STA restored; HTTP 200 |
+
+All three cycles confirmed the sequence `STA + HTTP ON -> HTTP stopped -> STA
+disconnected -> WIFI_OFF -> acquisition -> finalization -> CLOSED -> STA + HTTP
+restored`. Together they stored 298,393,600 RAW bytes over approximately 30
+minutes with true invariants and no storage incident or pool exhaustion.
+
+Bounded conclusion: on the tested XIAO ESP32-S3 bench, completely disabling
+Wi-Fi during acquisition removed the incidents observed in this campaign and
+provides a product architecture independent of field Wi-Fi quality or coverage.
+This result must not be generalized to the future Waveshare ESP32-S3 before its
+own hardware qualification.
