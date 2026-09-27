@@ -94,7 +94,9 @@ void refreshSnapshot() {
 
 void sendStatus() {
   const uint64_t started = esp_timer_get_time(); ++httpRequests;
-  char json[2800];
+  char json[4300];
+  uint32_t chunkFree, chunkFilling, chunkHistory, chunkPending, chunkWriting;
+  countChunkStates(chunkFree, chunkFilling, chunkHistory, chunkPending, chunkWriting);
   const String statusUnix = absoluteTimeValid ? String(startUnixMs) : "null";
   const String statusUtc = absoluteTimeValid ? "\"" + String(startUtc) + "\"" : "null";
   snprintf(json, sizeof(json),
@@ -113,8 +115,23 @@ void sendStatus() {
     "\"pre_wifi_internal_largest\":%u,\"pre_wifi_dma_free\":%u,\"pre_wifi_dma_min\":%u,"
     "\"events\":\"%llu\",\"excursions\":\"%llu\",\"adc_min\":%u,\"adc_max\":%u,"
     "\"adc_mean\":%.3f,\"d44_max\":%u,\"dma_overflow\":%u,\"adc_read_errors\":%u,"
+    "\"first_dma_overflow_us\":\"%llu\",\"first_dma_overflow_sample\":\"%llu\","
+    "\"first_pool_exhaustion_us\":\"%llu\",\"first_pool_exhaustion_sample\":\"%llu\","
+    "\"first_pool_state\":{\"free\":%u,\"filling\":%u,\"history\":%u,\"pending\":%u,\"writing\":%u},"
+    "\"chunk_states\":{\"free\":%u,\"filling\":%u,\"history\":%u,\"pending\":%u,\"writing\":%u},"
+    "\"chunk_lifecycle_errors\":%u,\"released_selected_chunks\":%u,"
     "\"pre_wifi_dma_largest\":%u,\"adc_task_stack_min_free\":%u,\"heap_integrity\":%s,"
     "\"invariant\":%s,\"pass\":%s,\"time_schema_version\":\"1.0\","
+    "\"calibration_state\":\"%s\",\"calibration_reason\":\"%s\","
+    "\"calibration_confidence\":%u,\"calibration_confidence_category\":\"%s\","
+    "\"calibration_noise_upper\":%u,\"calibration_activity_p10\":%u,"
+    "\"calibration_independent_bursts\":%u,\"calibration_quiet_windows\":%u,"
+    "\"calibration_active_windows\":%u,\"calibration_candidate_threshold\":%u,"
+    "\"calibration_validated_threshold\":%u,\"calibration_observed_samples\":\"%llu\","
+    "\"calibration_adc_zero\":\"%llu\",\"calibration_adc_low16\":\"%llu\","
+    "\"calibration_adc_high4079\":\"%llu\",\"calibration_adc_max4095\":\"%llu\","
+    "\"calibration_schema\":\"knx-calibration-1.0\",\"calibration_algorithm\":\"d44-autocal-v1\","
+    "\"calibration_id_crc32\":\"%08X\",\"calibration_persisted\":%s,"
     "\"time_source\":\"%s\",\"absolute_time_valid\":%s,\"start_unix_ms\":%s,\"start_utc\":%s,"
     "\"monotonic_origin_us\":\"%llu\"}",
     FIRMWARE_VERSION, snapshot.captureState, snapshot.storageState, snapshot.completionStatus,
@@ -130,10 +147,21 @@ void sendStatus() {
     preWifiInternalFree, preWifiInternalMin, preWifiInternalLargest,
     preWifiDmaFree, preWifiDmaMin, snapshot.events, snapshot.excursions,
     snapshot.adcMin, snapshot.adcMax, snapshot.adcMean, snapshot.d44Max,
-    snapshot.dmaOverflows, snapshot.adcErrors, preWifiDmaLargest,
+    snapshot.dmaOverflows, snapshot.adcErrors, firstDmaOverflowUs, firstDmaOverflowSample,
+    firstPoolExhaustionUs, firstPoolExhaustionSample,
+    firstPoolFree, firstPoolFilling, firstPoolHistory, firstPoolPending, firstPoolWriting,
+    chunkFree, chunkFilling, chunkHistory, chunkPending, chunkWriting,
+    chunkLifecycleErrors.load(), releasedSelectedChunks.load(), preWifiDmaLargest,
     adcTaskStackMinFree.load() == UINT32_MAX ? 0 : adcTaskStackMinFree.load(),
     heap_caps_check_integrity_all(false) ? "true" : "false",
     snapshot.invariant ? "true" : "false", snapshot.pass ? "true" : "false",
+    autocal::stateName(calibration.state()), calibration.reason(),
+    calibration.confidence(), calibration.confidenceName(), calibration.noiseUpper(),
+    calibration.activityP10(), calibration.bursts(), calibration.quietWindows(),
+    calibration.activeWindows(), calibration.candidateThreshold(), calibration.validatedThreshold(),
+    calibration.observedSamples(), calibration.adcZero(), calibration.adcLow16(),
+    calibration.adcHigh4079(), calibration.adcMax4095(), calibration.identityCrc(),
+    calibration.persistedValid() ? "true" : "false",
     timeSourceName(activeTimeSource), absoluteTimeValid ? "true" : "false",
     statusUnix.c_str(), statusUtc.c_str(), startedUs);
   server.sendHeader("Cache-Control", "no-store"); server.send(200, "application/json", json);
@@ -147,9 +175,11 @@ constexpr char mainPage[] PROGMEM = R"HTML(<!doctype html><html lang=en><head><t
 constexpr char sessionsPage[] PROGMEM = R"HTML(<!doctype html><html lang=en><head><title>Sessions</title>%HEAD%</head><body>%NAV%<h1>Sessions</h1><div class=card id=result>Loading last session...</div><p>This V2 exposes the current/last in-memory session only. No SD-wide session index is built.</p><script>fetch('/api/v1/status',{cache:'no-store'}).then(r=>r.json()).then(d=>result.innerHTML=`<h2>Last session</h2><p>State: <b>${d.capture_state} / ${d.completion_status}</b></p><p>Duration: ${(+d.duration_us/1e6).toFixed(3)} s<br>Events: ${d.events}<br>Samples: ${d.samples}<br>Data: ${d.raw_bytes} bytes<br>Loss / gaps: ${d.lost_samples} / ${d.gaps}<br>EIO / R1 / R3: ${d.raw_handle_failures} / ${d.R1} / ${d.retry_failures}</p>`)</script></body></html>)HTML";
 constexpr char networkPage[] PROGMEM = R"HTML(<!doctype html><html lang=en><head><title>Network</title>%HEAD%</head><body>%NAV%<h1>Network</h1><div class=card><pre id=status>Loading...</pre></div><div class=card><h2>Available Wi-Fi</h2><button type=button onclick=scan()>SCAN WI-FI</button><div id=scanResult>No scan requested.</div></div><form class=card id=nf method=post action=/api/v1/network><h2>Field Wi-Fi</h2><label>SSID <input name=field_ssid id=fs maxlength=32></label><div class=pw><input name=field_password id=fp type=password placeholder="Password (blank = unchanged)"><input name=field_password_confirm id=fpc type=password placeholder="Confirm password"><button type=button onclick=toggle('fp','fpc',this)>SHOW</button></div><label><input name=clear_field type=checkbox value=1> Clear profile</label><h2>Office Wi-Fi</h2><label>SSID <input name=office_ssid id=os maxlength=32></label><div class=pw><input name=office_password id=op type=password placeholder="Password (blank = unchanged)"><input name=office_password_confirm id=opc type=password placeholder="Confirm password"><button type=button onclick=toggle('op','opc',this)>SHOW</button></div><label><input name=clear_office type=checkbox value=1> Clear profile</label><h2>Analyzer AP</h2><div class=pw><input name=ap_password id=ap type=password minlength=8 placeholder="Password (blank = unchanged)"><input name=ap_password_confirm id=apc type=password minlength=8 placeholder="Confirm password"><button type=button onclick=toggle('ap','apc',this)>SHOW</button></div><button>SAVE AND APPLY</button></form><p>Connection order: Field first, then Office; each profile gets 15 seconds. After both fail, retry starts after 30 seconds. AP remains available outside acquisition. Hidden SSIDs can be entered manually.</p><script>function toggle(a,b,x){let show=document.getElementById(a).type=='password';document.getElementById(a).type=document.getElementById(b).type=show?'text':'password';x.textContent=show?'HIDE':'SHOW'}function pick(s,target){document.getElementById(target).value=s}async function scan(){scanResult.textContent='Scanning...';try{let a=await fetch('/api/v1/wifi-scan',{cache:'no-store'}).then(r=>r.json());scanResult.replaceChildren();if(!a.networks.length){scanResult.textContent='No network found.';return}for(const n of a.networks){let row=document.createElement('div'),name=document.createElement('span'),info=document.createElement('span'),actions=document.createElement('span'),bf=document.createElement('button'),bo=document.createElement('button');row.className='scan';name.textContent=n.ssid||'(hidden)';info.textContent=n.rssi+' dBm · '+n.security;bf.type=bo.type='button';bf.textContent='FIELD';bo.textContent='OFFICE';bf.onclick=()=>pick(n.ssid,'fs');bo.onclick=()=>pick(n.ssid,'os');actions.append(bf,bo);row.append(name,info,actions);scanResult.append(row)}}catch(e){scanResult.textContent='Scan failed — try again'}}nf.onsubmit=e=>{for(let p of [['fp','fpc'],['op','opc'],['ap','apc']])if(document.getElementById(p[0]).value!==document.getElementById(p[1]).value){e.preventDefault();alert('Password confirmation does not match');return}};fetch('/api/v1/network',{cache:'no-store'}).then(r=>r.json()).then(d=>{status.textContent=`STA: ${d.sta_connected?'CONNECTED':'DISCONNECTED'} ${d.sta_ssid} ${d.sta_ip}\nAP: ${d.ap_active?'ON':'OFF'} ${d.ap_ssid} ${d.ap_ip}\nField password: ${d.field_password_set?'configured':'not set'}\nOffice password: ${d.office_password_set?'configured':'not set'}`;fs.value=d.field_ssid;os.value=d.office_ssid})</script></body></html>)HTML";
 constexpr char updatePage[] PROGMEM = R"HTML(<!doctype html><html lang=en><head><title>Firmware Update</title>%HEAD%</head><body>%NAV%<h1>Firmware Update</h1><div class=card><p>Current version: <b>%VERSION%</b></p><p>Updates are accepted only in IDLE or CLOSED. Select an ESP32 application <code>.bin</code>; it is written to the inactive OTA partition and activated only after the official Update API validates the complete image.</p><form method=post action=/api/v1/update enctype=multipart/form-data onsubmit="return confirm('Install this firmware and reboot?')"><input type=file name=firmware accept=.bin,application/octet-stream required><button>UPDATE FIRMWARE</button></form></div></body></html>)HTML";
+constexpr char calibrationCard[] PROGMEM = R"HTML(<div class=card><h2>Calibration</h2><div id=calibration>Loading...</div></div><script>fetch('/api/v1/status',{cache:'no-store'}).then(r=>r.json()).then(d=>{let waiting=d.calibration_state=='WAITING_FOR_ACTIVITY',ready=d.calibration_state=='CALIBRATED';calibration.innerHTML='<b>'+d.calibration_state.replaceAll('_',' ')+'</b><br>'+(ready?'Confidence: '+d.calibration_confidence_category+' ('+d.calibration_confidence+'%)<br>Detection threshold: '+d.calibration_validated_threshold:waiting?'Background characterization complete<br>Independent transitions: '+d.calibration_independent_bursts+'/20<br>Operate several KNX switches or devices to continue calibration.':'Characterizing background noise...<br>Quiet windows: '+d.calibration_quiet_windows+'/30')})</script>)HTML";
 
 String renderPage(const char *source) {
   String page(source); page.replace("%HEAD%", FPSTR(commonHead)); page.replace("%NAV%", FPSTR(nav));
+  if (source == mainPage) page.replace("<div class=card><h2>Last acquisition", String(FPSTR(calibrationCard)) + "<div class=card><h2>Last acquisition");
   page.replace("%VERSION%", FIRMWARE_VERSION); return page;
 }
 
@@ -197,9 +227,12 @@ void startSafeServices() {
   if (!otaPassword.isEmpty() && !otaConfigured) {
     ArduinoOTA.setHostname(hostname); ArduinoOTA.setPassword(otaPassword.c_str());
     ArduinoOTA.setMdnsEnabled(false);
-    ArduinoOTA.onStart([] { otaActive = true; Serial.println("{\"type\":\"OTA_START\"}"); });
+    ArduinoOTA.onStart([] { stopIdleObservation(); otaActive = true; Serial.println("{\"type\":\"OTA_START\"}"); });
     ArduinoOTA.onEnd([] { otaActive = false; Serial.println("{\"type\":\"OTA_END\",\"validation\":\"OK\"}"); });
-    ArduinoOTA.onError([](ota_error_t error) { otaActive = false; Serial.printf("{\"type\":\"OTA_ERROR\",\"code\":%u}\n", unsigned(error)); });
+    ArduinoOTA.onError([](ota_error_t error) {
+      otaActive = false; startIdleObservation();
+      Serial.printf("{\"type\":\"OTA_ERROR\",\"code\":%u}\n", unsigned(error));
+    });
     ArduinoOTA.begin(); otaConfigured = true;
   }
 }
@@ -372,6 +405,11 @@ void begin() {
   server.on("/api/v1/start", HTTP_POST, [] {
     ++httpRequests;
     if (state.load() != State::IDLE && state.load() != State::CLOSED) { server.send(409, "application/json", "{\"accepted\":false,\"error\":\"state\"}"); return; }
+    if (!calibration.valid()) {
+      const String json = "{\"accepted\":false,\"error\":\"calibration_required\",\"calibration_state\":\"" +
+        String(autocal::stateName(calibration.state())) + "\",\"reason\":\"" + calibration.reason() + "\"}";
+      server.send(409, "application/json", json); return;
+    }
     uint32_t seconds = server.hasArg("seconds") ? strtoul(server.arg("seconds").c_str(), nullptr, 10) : 60;
     if (server.arg("seconds") == "custom") seconds = strtoul(server.arg("custom_seconds").c_str(), nullptr, 10);
     if (seconds < 60 || seconds > 32400) { server.send(400, "application/json", "{\"accepted\":false,\"error\":\"duration_60_to_32400\"}"); return; }
@@ -415,13 +453,20 @@ void begin() {
       webOtaWriting = webOtaOk = false; webOtaError = "";
       if (!webOtaAccepted) { webOtaError = "Analyzer state is not safe for update."; return; }
       if (!upload.filename.endsWith(".bin")) { webOtaAccepted = false; webOtaError = "Only .bin application images are accepted."; return; }
-      if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) { webOtaAccepted = false; webOtaError = Update.errorString(); return; }
+      stopIdleObservation();
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+        webOtaAccepted = false; webOtaError = Update.errorString(); startIdleObservation(); return;
+      }
       webOtaWriting = true;
     } else if (upload.status == UPLOAD_FILE_WRITE && webOtaWriting) {
-      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) { webOtaError = Update.errorString(); webOtaWriting = false; Update.abort(); }
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        webOtaError = Update.errorString(); webOtaWriting = false; Update.abort(); startIdleObservation();
+      }
     } else if (upload.status == UPLOAD_FILE_END && webOtaWriting) {
       webOtaOk = Update.end(true); webOtaWriting = false; if (!webOtaOk) webOtaError = Update.errorString();
-    } else if (upload.status == UPLOAD_FILE_ABORTED) { Update.abort(); webOtaWriting = false; webOtaError = "Upload aborted."; }
+    } else if (upload.status == UPLOAD_FILE_ABORTED) {
+      Update.abort(); webOtaWriting = false; webOtaError = "Upload aborted."; startIdleObservation();
+    }
   });
   server.onNotFound([] {
     ++httpRequests;
@@ -457,7 +502,11 @@ void tick() {
   }
   if (startPending && int32_t(millis() - startAfterMs) >= 0) {
     startPending = false; requestedDurationUs = pendingDurationUs;
-    if (!stopForCapture() || !startRun()) Serial.println("{\"type\":\"WEB_START\",\"accepted\":false}");
+    stopIdleObservation();
+    if (!stopForCapture() || !startRun()) {
+      startIdleObservation();
+      Serial.println("{\"type\":\"WEB_START\",\"accepted\":false}");
+    }
   }
   if (WiFi.status() != WL_CONNECTED && int32_t(millis() - nextReconnectMs) >= 0) {
     ++staReconnects; WiFi.disconnect(false, false);

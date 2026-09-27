@@ -80,12 +80,44 @@ Two update paths are validated:
 
 The final manual Web OTA installed `KNXAnalyzerField-s3-analog-v0.4-web-ota-test.bin`. The image size was `1,086,432` bytes and its SHA-256 was `F569E66DFED430C29804E11E5B30632390B0A245BB9391D7C4373C17B4B6E5C6`. After reboot, the Dashboard confirmed active version `KNXAnalyzerField-s3-analog-v0.4-web-ota-test`; the STA/AP configuration was preserved.
 
+## Auto-Calibration V1 and real KNX validation
+
+The XIAO ESP32-S3 is now connected to a real KNX TP1 bus through the current
+390 kOhm / 27 kOhm divider on D0/GPIO1. Auto-Calibration V1 observes
+ADC continuous/DMA -> D44 -> bounded RAM statistics automatically in IDLE.
+It writes no continuous RAW and does not use the SD. The experimental V1
+qualification parameters are centralized in auto_calibration.h; they are not
+universal KNX constants.
+
+The state progression is OBSERVING_NOISE -> WAITING_FOR_ACTIVITY ->
+CALIBRATING -> CALIBRATED. START is rejected with HTTP 409 until calibration
+is valid. A validated threshold is immutable during a session. The versioned
+NVS record has a CRC and includes the hardware/ADC/algorithm identity, threshold,
+confidence, noise/activity statistics and clipping counters. Session metadata
+records the exact calibration identity and threshold used.
+
+Field evidence:
+
+- a quiet bus reached WAITING_FOR_ACTIVITY without being falsely calibrated;
+- real physical/ETS traffic produced a HIGH-confidence calibration with
+  noise_upper=286, activity_p10=2239, threshold 1262, and calibration CRC
+  73DCD6FB;
+- the first calibrated 60.094291 s session produced 18 events, 28,756
+  excursions and 120 event RAW chunks (983,040 bytes), with zero pool
+  exhaustion, DMA/read error, loss, GAP, EIO, R1, R3 or lifecycle error;
+- the selected-chunk lifecycle recycled all 120 written chunks and completed
+  CLOSED / COMPLETE with invariant true;
+- a physical power-cycle restored CALIBRATED, threshold 1262, confidence
+  HIGH and CRC 73DCD6FB directly from NVS, then resumed IDLE observation.
+
+The NVS snapshot is intentionally written when calibration becomes valid; later
+diagnostic growth in RAM is not rewritten continuously.
+
 ### Open items
 
 - mDNS discovery.
 - Complete SD session history/index.
 - Touchscreen UI and hardware qualification for the future Waveshare ESP32-S3.
-- Real KNX analog connection and analog auto-calibration.
 - Later TP-UART/NCN interface.
 - Potential Web OTA security hardening.
 

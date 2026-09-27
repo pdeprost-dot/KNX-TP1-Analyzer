@@ -50,6 +50,22 @@ No private session, RAW capture, validation bundle, or local SDK belongs in Git.
 - Validation baseline: .NET SDK **10.0.401**, Release build with zero warnings and errors, **19/19 tests passing**.
 - Firmware and acquisition formats were not modified.
 
+## KNX Analyzer Field S3 Auto-Calibration V1
+
+- Development remains on feature/knx-analyzer-field-s3; the C6 firmware is
+  legacy reference material only.
+- The real-bus selected-chunk lifecycle fix is validated beyond the 12-chunk
+  pool: 120 event chunks written, recycled and reused without exhaustion.
+- Auto-Calibration V1 observes D44 in IDLE without RAW or SD writes, blocks
+  START until valid, persists a versioned CRC-protected NVS snapshot and freezes
+  its threshold for each session.
+- Validated field calibration: threshold 1262, confidence HIGH/100%,
+  noise_upper=286, activity_p10=2239, CRC 73DCD6FB.
+- Calibrated 60 s acquisition: CLOSED / COMPLETE, invariant true, 18 events,
+  120 RAW chunks, and zero loss, GAP, EIO, R1/R3, DMA/read or lifecycle error.
+- Physical power-cycle restored the same calibration directly from NVS and
+  resumed IDLE observation with STA/AP/Web and storage healthy.
+
 ## Next gate
 
-Prepare the first real field session. Do not start auto-calibration, BUS CHECK DC, multi-Analyzer, or a new acquisition automatically.
+Do not start another acquisition or a new milestone automatically.

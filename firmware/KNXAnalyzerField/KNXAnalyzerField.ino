@@ -10,9 +10,10 @@
 #include <time.h>
 #include "board_xiao_esp32s3.h"
 #include "activity_detector.h"
+#include "auto_calibration.h"
 
 #define S3_NETWORK_ENABLED 1
-constexpr const char *FIRMWARE_VERSION = "KNXAnalyzerField-s3-analog-v0.4.1-time";
+constexpr const char *FIRMWARE_VERSION = "KNXAnalyzerField-s3-analog-v0.5.0-autocal-v1";
 
 // Headless KNX Analyzer Field bring-up. Real ADC; no KNX bus, display, touch,
 // camera, microphone, or future UART is initialized in this milestone.
@@ -40,6 +41,7 @@ enum class StorageState : uint8_t { HEALTHY, OUTAGE, RECOVERING };
 enum class CaptureMode : uint8_t { EVENT, CONTINUOUS };
 enum class TimeSource : uint8_t { NONE, BROWSER, NTP };
 enum class ChunkState : uint8_t { FREE, FILLING, HISTORY, PENDING, WRITING };
+enum class AdcMode : uint8_t { OFF, OBSERVING, CAPTURING };
 struct Chunk {
   uint64_t seq = 0, sampleStart = 0, segmentOffset = 0;
   uint32_t crc = 0, count = 0;
@@ -103,11 +105,18 @@ uint64_t nextChunkDueUs = 0;
 uint32_t cadenceRemainder = 0;
 adc_continuous_handle_t adcHandle = nullptr;
 uint8_t *adcDmaBuffer = nullptr;
+std::atomic<AdcMode> adcMode{AdcMode::OFF};
 std::atomic<uint32_t> dmaOverflows{0}, adcReadErrors{0};
 std::atomic<uint32_t> adcTaskStackMinFree{UINT32_MAX};
+uint64_t firstDmaOverflowUs = 0, firstDmaOverflowSample = 0;
+uint64_t firstPoolExhaustionUs = 0, firstPoolExhaustionSample = 0;
+uint32_t firstPoolFree = 0, firstPoolFilling = 0, firstPoolHistory = 0, firstPoolPending = 0, firstPoolWriting = 0;
+std::atomic<uint32_t> chunkLifecycleErrors{0}, releasedSelectedChunks{0};
 CaptureMode captureMode = CaptureMode::EVENT;
 DetectionConfig detection{4095, 8333, 8333, true, "UNCALIBRATED_SAFE"};
 D44ActivityDetector detector;
+D44ActivityDetector calibrationDetector;
+autocal::Calibration calibration;
 Chunk *currentChunk = nullptr;
 bool eventActive = false;
 uint64_t eventStart = 0, eventTrigger = 0, eventEnd = 0, eventCount = 0, excursionCount = 0;
@@ -133,6 +142,28 @@ void updateQueueStats() {
   if (freeDepth < freeMin) freeMin = freeDepth;
   if (readyDepth > readyMax) readyMax = readyDepth;
   if (pending > pendingMax) pendingMax = pending;
+}
+
+void countChunkStates(uint32_t &freeCount, uint32_t &fillingCount, uint32_t &historyCount,
+                      uint32_t &pendingCount, uint32_t &writingCount) {
+  freeCount = fillingCount = historyCount = pendingCount = writingCount = 0;
+  for (Chunk *chunk : chunks) {
+    if (!chunk) continue;
+    switch (chunk->state) {
+      case ChunkState::FREE: ++freeCount; break;
+      case ChunkState::FILLING: ++fillingCount; break;
+      case ChunkState::HISTORY: ++historyCount; break;
+      case ChunkState::PENDING: ++pendingCount; break;
+      case ChunkState::WRITING: ++writingCount; break;
+    }
+  }
+}
+
+void recordPoolExhaustion(uint64_t sampleIndex) {
+  if (firstPoolExhaustionUs) return;
+  firstPoolExhaustionUs = esp_timer_get_time() - startedUs;
+  firstPoolExhaustionSample = sampleIndex;
+  countChunkStates(firstPoolFree, firstPoolFilling, firstPoolHistory, firstPoolPending, firstPoolWriting);
 }
 
 const char *stateName(State value) {
@@ -476,6 +507,11 @@ bool attemptInjectedRecovery(Chunk &chunk) {
 
 bool writeChunk(Chunk &chunk) {
   const uint32_t chunkBytes = chunk.count * sizeof(uint16_t);
+  if (chunk.stored || (storedChunks && chunk.sampleStart < lastStoredSampleEnd)) {
+    ++chunkLifecycleErrors;
+    failSd("chunk_lifecycle");
+    return false;
+  }
   if (storageState.load() == StorageState::OUTAGE) {
     const uint64_t nowUs = esp_timer_get_time() - startedUs;
     if (faultRecoveryConsumed) {
@@ -592,6 +628,23 @@ bool initAdc() {
   return adc_continuous_register_event_callbacks(adcHandle, &callbacks, nullptr) == ESP_OK;
 }
 
+bool startIdleObservation() {
+  if (!adcHandle || state.load() == State::RUNNING || state.load() == State::STOPPING) return false;
+  if (adcMode.load() == AdcMode::OBSERVING) return true;
+  calibrationDetector.reset();
+  if (adc_continuous_start(adcHandle) != ESP_OK) return false;
+  adcMode = AdcMode::OBSERVING;
+  return true;
+}
+
+void stopIdleObservation() {
+  if (adcMode.load() != AdcMode::OBSERVING) return;
+  adcMode = AdcMode::OFF;
+  if (adcHandle) adc_continuous_stop(adcHandle);
+  const uint32_t deadline = millis() + 100;
+  while (!producerDrained.load() && int32_t(deadline - millis()) > 0) delay(1);
+}
+
 Chunk *acquireChunk(uint64_t sampleStart) {
   Chunk *candidate = nullptr;
   for (Chunk *chunk : chunks) {
@@ -616,6 +669,7 @@ void enqueueSelected(Chunk *chunk) {
   if (!chunk || chunk->state != ChunkState::HISTORY || !chunk->selected || chunk->stored) return;
   chunk->state = ChunkState::PENDING;
   if (xQueueSend(readyQ, &chunk, 0) != pdTRUE) {
+    recordPoolExhaustion(chunk->sampleStart);
     ++poolExhaustion; lostSamples += chunk->count; chunk->accounted = true;
     state = State::FAILED; stopRequested = true;
   }
@@ -623,13 +677,21 @@ void enqueueSelected(Chunk *chunk) {
 }
 
 void selectRange(uint64_t from, uint64_t to) {
+  Chunk *history[CHUNK_COUNT]{};
+  uint32_t historyCount = 0;
   for (Chunk *chunk : chunks) {
     const uint64_t end = chunk->sampleStart + chunk->count;
-    if (chunk->state != ChunkState::FREE && end > from && chunk->sampleStart < to) {
+    if (chunk->state != ChunkState::FREE && !chunk->stored && end > from && chunk->sampleStart < to) {
       chunk->selected = true;
-      if (chunk->state == ChunkState::HISTORY) enqueueSelected(chunk);
+      if (chunk->state == ChunkState::HISTORY) history[historyCount++] = chunk;
     }
   }
+  for (uint32_t i = 1; i < historyCount; ++i) {
+    Chunk *value = history[i]; uint32_t j = i;
+    while (j && history[j - 1]->sampleStart > value->sampleStart) { history[j] = history[j - 1]; --j; }
+    history[j] = value;
+  }
+  for (uint32_t i = 0; i < historyCount; ++i) enqueueSelected(history[i]);
 }
 
 void closeEvent(uint64_t closeSample, bool truncated) {
@@ -656,7 +718,12 @@ void producerTask(void *) {
     const uint32_t stackFree = uxTaskGetStackHighWaterMark(nullptr);
     uint32_t observed = adcTaskStackMinFree.load();
     while (stackFree < observed && !adcTaskStackMinFree.compare_exchange_weak(observed, stackFree)) {}
-    if (state.load() != State::RUNNING || stopRequested.load()) {
+    if (dmaOverflows.load() && !firstDmaOverflowUs) {
+      firstDmaOverflowUs = esp_timer_get_time() - startedUs;
+      firstDmaOverflowSample = producedSamples.load();
+    }
+    const AdcMode mode = adcMode.load();
+    if (mode == AdcMode::OFF || (mode == AdcMode::CAPTURING && stopRequested.load())) {
       producerDrained = true;
       vTaskDelay(pdMS_TO_TICKS(2));
       continue;
@@ -671,9 +738,15 @@ void producerTask(void *) {
       const auto *result = reinterpret_cast<const adc_digi_output_data_t *>(adcDmaBuffer + offset);
       if (result->type2.channel != board::ADC_CHANNEL) continue;
       const uint16_t value = result->type2.data;
+      if (mode == AdcMode::OBSERVING) {
+        const uint32_t d44 = calibrationDetector.push(value);
+        calibration.process(value, d44);
+        continue;
+      }
       const uint64_t index = producedSamples.fetch_add(1);
       if (!currentChunk) currentChunk = acquireChunk(index);
       if (!currentChunk) {
+        recordPoolExhaustion(index);
         ++poolExhaustion; ++lostSamples; state = State::FAILED; stopRequested = true; break;
       }
       currentChunk->data[currentChunk->count++] = value;
@@ -707,10 +780,15 @@ void writerTask(void *) {
     if (xQueueReceive(readyQ, &chunk, pdMS_TO_TICKS(20)) == pdTRUE) {
       const uint64_t holdStarted = esp_timer_get_time();
       writerActive = true;
+      if (chunk->state != ChunkState::PENDING || chunk->stored) ++chunkLifecycleErrors;
       chunk->state = ChunkState::WRITING;
       updateQueueStats();
-      writeChunk(*chunk);
-      chunk->stored = true; chunk->accounted = true; chunk->state = ChunkState::HISTORY;
+      const bool handled = writeChunk(*chunk);
+      if (handled) {
+        chunk->stored = true; chunk->accounted = true; chunk->selected = false;
+        ++releasedSelectedChunks;
+      }
+      chunk->state = ChunkState::HISTORY;
       writerActive = false;
       const uint32_t heldUs = uint32_t(esp_timer_get_time() - holdStarted);
       if (heldUs > writerHoldMaxUs) { writerHoldMaxUs = heldUs; writerHoldMaxChunk = uint32_t(chunk->seq); }
@@ -750,6 +828,10 @@ void resetCounters() {
   writeLatencyMaxChunk = checkpointLatencyMaxChunk = writerHoldMaxChunk = writeCount = 0;
   cadenceRemainder = 0;
   dmaOverflows = adcReadErrors = 0;
+  firstDmaOverflowUs = firstDmaOverflowSample = 0;
+  firstPoolExhaustionUs = firstPoolExhaustionSample = 0;
+  firstPoolFree = firstPoolFilling = firstPoolHistory = firstPoolPending = firstPoolWriting = 0;
+  chunkLifecycleErrors = releasedSelectedChunks = 0;
   adcMin = UINT16_MAX; adcMax = d44Max = 0; adcSum = 0;
   eventActive = false; eventStart = eventTrigger = eventEnd = eventCount = excursionCount = 0;
   eventTriggerD44 = eventMaxD44 = 0; eventMin = UINT16_MAX; eventMax = 0;
@@ -796,6 +878,9 @@ void activateTimeReference(uint64_t monotonicOriginUs) {
 
 bool startRun() {
   if (!sdReady || (state.load() != State::IDLE && state.load() != State::CLOSED)) return false;
+  if (!calibration.valid()) return false;
+  detection.d44Threshold = calibration.validatedThreshold();
+  detection.profile = "AUTO_D44_V1";
   resetCounters();
   char name[32]; snprintf(name, sizeof(name), "/KNX-%08lX", (unsigned long)esp_random());
   sessionDir = name;
@@ -826,17 +911,34 @@ bool startRun() {
   session.printf("{\"schema_version\":\"knx-long-session-1.0\",\"firmware\":\"KNXAnalyzerField-s3-analog-v0\",\"sample_rate_hz\":%u,"
                  "\"sample_type\":\"uint16_le\",\"chunk_samples\":%u,\"chunk_bytes\":%u,"
                  "\"capture_mode\":\"%s\",\"trigger_profile\":\"%s\",\"d44_threshold\":%u,"
-                 "\"pre_samples\":%u,\"post_samples\":%u,\"adc_gpio\":1,"
-                 "\"time_schema_version\":\"1.0\",\"time_source\":\"%s\",\"absolute_time_valid\":%s,"
+                 "\"pre_samples\":%u,\"post_samples\":%u,\"adc_gpio\":1,\"calibration_state\":\"CALIBRATED\","
+                 "\"calibration_schema\":\"knx-calibration-1.0\",\"calibration_algorithm\":\"d44-autocal-v1\","
+                 "\"calibration_id_crc32\":\"%08X\",\"calibration_confidence\":%u,\"calibration_confidence_category\":\"%s\","
+                 "\"calibration_noise_upper\":%u,\"calibration_activity_p10\":%u,\"calibration_quiet_windows\":%u,"
+                 "\"calibration_active_windows\":%u,\"calibration_independent_bursts\":%u,"
+                 "\"calibration_board_profile\":\"XIAO_ESP32S3_GPIO1\","
+                 "\"calibration_frontend_profile\":\"KNX_DIVIDER_390K_27K\","
+                 "\"calibration_adc_profile\":\"ADC1_CH0_12DB_12BIT_83333HZ\","
+                 "\"calibration_adc_zero\":\"%llu\",\"calibration_adc_low16\":\"%llu\","
+                 "\"calibration_adc_high4079\":\"%llu\",\"calibration_adc_max4095\":\"%llu\","
+                 "\"calibrated_unix_ms\":null,\"time_schema_version\":\"1.0\","
+                 "\"time_source\":\"%s\",\"absolute_time_valid\":%s,"
                  "%s,\"monotonic_origin_us\":\"%llu\",\"camera\":false,\"microphone\":false}\n",
                  SAMPLE_RATE, CHUNK_SAMPLES, CHUNK_BYTES,
                  captureMode == CaptureMode::CONTINUOUS ? "CONTINUOUS_DIAGNOSTIC" : "EVENT",
                  detection.profile, detection.d44Threshold, detection.preSamples, detection.postSamples,
+                 calibration.identityCrc(), calibration.confidence(), calibration.confidenceName(),
+                 calibration.noiseUpper(), calibration.activityP10(), calibration.quietWindows(),
+                 calibration.activeWindows(), calibration.bursts(), calibration.adcZero(), calibration.adcLow16(),
+                 calibration.adcHigh4079(), calibration.adcMax4095(),
                  timeSourceName(activeTimeSource), absoluteTimeValid ? "true" : "false",
                  absoluteFields.c_str(), startedUs);
   session.flush(); session.close();
   stopRequested = false; producerDrained = false;
-  if (!adcHandle || adc_continuous_start(adcHandle) != ESP_OK) { state = State::FAILED; return false; }
+  adcMode = AdcMode::CAPTURING;
+  if (!adcHandle || adc_continuous_start(adcHandle) != ESP_OK) {
+    adcMode = AdcMode::OFF; state = State::FAILED; return false;
+  }
   state = State::RUNNING;
   Serial.printf("{\"type\":\"START\",\"dir\":\"%s\",\"source\":\"ADC_GPIO1\",\"mode\":\"%s\","
                 "\"duration_us\":\"%llu\",\"sample_rate_target_hz\":%u}\n", sessionDir.c_str(),
@@ -850,6 +952,7 @@ void finalizeRun() {
   if (before != State::RUNNING && before != State::FAILED) return;
   if (before == State::RUNNING) state = State::STOPPING;
   stopRequested = true;
+  adcMode = AdcMode::OFF;
   if (adcHandle) adc_continuous_stop(adcHandle);
   const uint32_t drainDeadline = millis() + 3000;
   while (!producerDrained.load() && int32_t(drainDeadline - millis()) > 0) delay(1);
@@ -889,7 +992,7 @@ void finalizeRun() {
       gapSampleEnd - gapSampleStart == lostSamples.load() && gapSegmentAfter == gapSegmentBefore + 1 &&
       gapPreviousStoredEnd == gapSampleStart && gapResumeSampleStart == gapSampleEnd && maxRecoveryBackoffMs <= 4000;
   const bool structurallyHealthy = before != State::FAILED && sdErrors.load() == 0 && poolExhaustion.load() == 0 &&
-      retryFailures.load() == 0 && dmaOverflows.load() == 0 && invariantOk;
+      retryFailures.load() == 0 && dmaOverflows.load() == 0 && chunkLifecycleErrors.load() == 0 && invariantOk;
   finalPass = structurallyHealthy &&
       (faultExpected ? (exactInjectedR3Gap || exactInjectedOutage || exactInjectedRecovery) : lostSamples.load() == 0);
   if (!structurallyHealthy || !finalPass) completionStatus = "FAILED";
@@ -903,6 +1006,9 @@ void finalizeRun() {
                   "\"raw_bytes\":\"%llu\",\"stored_samples\":\"%llu\",\"ignored_samples\":\"%llu\","
                   "\"events_total\":\"%llu\",\"excursions\":\"%llu\",\"adc_min\":%u,\"adc_max\":%u,"
                   "\"adc_mean\":%.3f,\"d44_max\":%u,\"dma_overflow\":%u,\"adc_read_errors\":%u,"
+                  "\"first_dma_overflow_us\":\"%llu\",\"first_dma_overflow_sample\":\"%llu\","
+                  "\"first_pool_exhaustion_us\":\"%llu\",\"first_pool_exhaustion_sample\":\"%llu\","
+                  "\"chunk_lifecycle_errors\":%u,\"released_selected_chunks\":%u,"
                   "\"raw_handle_failures\":%u,\"recovered_R1\":%u,"
                   "\"retry_failures\":%u,\"reopen_failures\":%u,\"sd_errors\":%u,\"data_loss\":\"%llu\","
                   "\"pool_exhaustion\":%u,\"free_min\":%u,\"pending_max\":%u,\"ready_max\":%u,"
@@ -925,7 +1031,9 @@ void finalizeRun() {
                   rawBytes.load(), storedSamples.load(), ignoredSamples.load(), eventCount, excursionCount,
                   adcMin == UINT16_MAX ? 0 : adcMin, adcMax,
                   producedSamples.load() ? double(adcSum) / producedSamples.load() : 0.0, d44Max,
-                  dmaOverflows.load(), adcReadErrors.load(), rawHandleFailures.load(), r1Count.load(), retryFailures.load(), reopenFailures.load(),
+                  dmaOverflows.load(), adcReadErrors.load(), firstDmaOverflowUs, firstDmaOverflowSample,
+                  firstPoolExhaustionUs, firstPoolExhaustionSample, chunkLifecycleErrors.load(), releasedSelectedChunks.load(),
+                  rawHandleFailures.load(), r1Count.load(), retryFailures.load(), reopenFailures.load(),
                   sdErrors.load(), lostSamples.load(), poolExhaustion.load(), freeMin, pendingMax, readyMax,
                   writeCount ? writeLatencyMinUs : 0, writeCount ? double(writeLatencyTotalUs) / writeCount : 0,
                   writeLatencyMaxUs, writeLatencyMaxChunk,
@@ -946,6 +1054,7 @@ void finalizeRun() {
     Serial.printf("{\"type\":\"SD_ERROR\",\"source\":\"finalization\",\"count\":%u}\n", sdErrors.load());
   }
   state = finalPass ? State::CLOSED : State::FAILED;
+  if (state.load() == State::CLOSED) startIdleObservation();
   Serial.printf("{\"type\":\"FINALIZATION\",\"state\":\"%s\",\"completion_status\":\"%s\","
                 "\"pass\":%s,\"crc32\":\"%08X\",\"invariant\":%s}\n",
                 stateName(state.load()), completionStatus, finalPass ? "true" : "false",
@@ -1189,6 +1298,11 @@ void handleCommand(String command) {
     else { detection.d44Threshold = strtoul(command.substring(10).c_str(), nullptr, 10);
       Serial.printf("OK THRESHOLD %u\n", detection.d44Threshold); }
   } else if (command.startsWith("START")) {
+    if (!calibration.valid()) {
+      Serial.printf("ERROR START CALIBRATION_REQUIRED %s %s\n",
+                    autocal::stateName(calibration.state()), calibration.reason());
+      return;
+    }
     if (command.length() > 5) {
       const uint32_t seconds = strtoul(command.substring(6).c_str(), nullptr, 10);
       if (!seconds) { Serial.println("ERROR START DURATION"); return; }
@@ -1196,9 +1310,11 @@ void handleCommand(String command) {
     }
 #if S3_NETWORK_ENABLED
     prepareTimeNone();
-    if (!s3net::stopForCapture()) { Serial.println("ERROR START WIFI_NOT_OFF"); return; }
+    stopIdleObservation();
+    if (!s3net::stopForCapture()) { startIdleObservation(); Serial.println("ERROR START WIFI_NOT_OFF"); return; }
 #endif
-    Serial.println(startRun() ? "OK START" : "ERROR START");
+    if (startRun()) Serial.println("OK START");
+    else { startIdleObservation(); Serial.println("ERROR START"); }
   }
   else if (command == "STOP") {
     if (state.load() != State::RUNNING) Serial.println("ERROR STOP");
@@ -1253,12 +1369,15 @@ void setup() {
                 poolReady ? "true" : "false", adcReady ? "true" : "false",
                 adcBufferReady ? "true" : "false", ADC_TASK_STACK_BYTES, SAMPLE_RATE);
   if (!sdReady || !poolReady || !adcReady || !adcBufferReady || !producerHandle) state = State::FAILED;
+  calibration.begin();
+  if (state.load() != State::FAILED && !startIdleObservation()) state = State::FAILED;
 #if S3_NETWORK_ENABLED
   s3net::begin();
 #endif
 }
 
 void loop() {
+  calibration.servicePersistence();
 #if S3_NETWORK_ENABLED
   s3net::tick();
 #endif
