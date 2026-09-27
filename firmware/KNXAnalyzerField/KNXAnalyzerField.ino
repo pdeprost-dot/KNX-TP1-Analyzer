@@ -7,11 +7,12 @@
 #include <soc/soc_caps.h>
 #include <atomic>
 #include <errno.h>
+#include <time.h>
 #include "board_xiao_esp32s3.h"
 #include "activity_detector.h"
 
 #define S3_NETWORK_ENABLED 1
-constexpr const char *FIRMWARE_VERSION = "KNXAnalyzerField-s3-analog-v0.4-web-ota-test";
+constexpr const char *FIRMWARE_VERSION = "KNXAnalyzerField-s3-analog-v0.4.1-time";
 
 // Headless KNX Analyzer Field bring-up. Real ADC; no KNX bus, display, touch,
 // camera, microphone, or future UART is initialized in this milestone.
@@ -37,6 +38,7 @@ constexpr uint32_t INDEX_STRIDE_CHUNKS = 256;
 enum class State : uint8_t { IDLE, RUNNING, STOPPING, CLOSED, FAILED };
 enum class StorageState : uint8_t { HEALTHY, OUTAGE, RECOVERING };
 enum class CaptureMode : uint8_t { EVENT, CONTINUOUS };
+enum class TimeSource : uint8_t { NONE, BROWSER, NTP };
 enum class ChunkState : uint8_t { FREE, FILLING, HISTORY, PENDING, WRITING };
 struct Chunk {
   uint64_t seq = 0, sampleStart = 0, segmentOffset = 0;
@@ -82,6 +84,11 @@ uint64_t nextRecoveryDueUs = 0;
 uint32_t currentRecoveryBackoffMs = 0, maxRecoveryBackoffMs = 0;
 uint64_t firstRawFailureUs = 0;
 uint64_t startedUs = 0, closedUs = 0, segmentBytes = 0, segmentSampleStart = 0;
+TimeSource pendingTimeSource = TimeSource::NONE, activeTimeSource = TimeSource::NONE;
+uint64_t pendingUnixMs = 0, pendingReferenceMonoUs = 0, startUnixMs = 0;
+int32_t pendingTimezoneOffsetMin = 0, activeTimezoneOffsetMin = 0;
+bool absoluteTimeValid = false;
+char startUtc[32] = {};
 uint32_t segmentIndex = 0, segmentChunks = 0, segmentCrc = 0, sessionCrc = 0;
 uint64_t storedChunks = 0, checkpointCount = 0, lastStoredSampleEnd = 0;
 char mapBuffer[8192];
@@ -751,6 +758,42 @@ void resetCounters() {
   for (Chunk *chunk : chunks) if (chunk) { memset(chunk, 0, sizeof(Chunk)); chunk->state = ChunkState::FREE; }
 }
 
+const char *timeSourceName(TimeSource source) {
+  switch (source) {
+    case TimeSource::BROWSER: return "BROWSER";
+    case TimeSource::NTP: return "NTP";
+    default: return "NONE";
+  }
+}
+
+void prepareTimeNone() {
+  pendingTimeSource = TimeSource::NONE; pendingUnixMs = 0;
+  pendingReferenceMonoUs = esp_timer_get_time(); pendingTimezoneOffsetMin = 0;
+}
+
+void prepareTimeBrowser(uint64_t unixMs, int32_t timezoneOffsetMin) {
+  constexpr uint64_t MIN_VALID_UNIX_MS = 946684800000ULL;   // 2000-01-01 UTC
+  constexpr uint64_t MAX_VALID_UNIX_MS = 4102444800000ULL;  // 2100-01-01 UTC
+  if (unixMs < MIN_VALID_UNIX_MS || unixMs >= MAX_VALID_UNIX_MS) { prepareTimeNone(); return; }
+  pendingTimeSource = TimeSource::BROWSER; pendingUnixMs = unixMs;
+  pendingReferenceMonoUs = esp_timer_get_time(); pendingTimezoneOffsetMin = timezoneOffsetMin;
+}
+
+void activateTimeReference(uint64_t monotonicOriginUs) {
+  activeTimeSource = pendingTimeSource;
+  activeTimezoneOffsetMin = pendingTimezoneOffsetMin;
+  absoluteTimeValid = activeTimeSource != TimeSource::NONE && pendingUnixMs != 0;
+  startUnixMs = absoluteTimeValid ? pendingUnixMs + (monotonicOriginUs - pendingReferenceMonoUs) / 1000ULL : 0;
+  startUtc[0] = 0;
+  if (absoluteTimeValid) {
+    const time_t seconds = time_t(startUnixMs / 1000ULL); struct tm utc{};
+    if (gmtime_r(&seconds, &utc)) {
+      char base[24]; strftime(base, sizeof(base), "%Y-%m-%dT%H:%M:%S", &utc);
+      snprintf(startUtc, sizeof(startUtc), "%s.%03uZ", base, unsigned(startUnixMs % 1000ULL));
+    } else { absoluteTimeValid = false; activeTimeSource = TimeSource::NONE; startUnixMs = 0; }
+  }
+}
+
 bool startRun() {
   if (!sdReady || (state.load() != State::IDLE && state.load() != State::CLOSED)) return false;
   resetCounters();
@@ -771,17 +814,28 @@ bool startRun() {
   }
   File session = SD.open(sessionDir + "/session-start.json", FILE_WRITE);
   if (!session) { state = State::FAILED; return false; }
+  startedUs = esp_timer_get_time(); closedUs = 0;
+  activateTimeReference(startedUs);
+  String absoluteFields;
+  if (absoluteTimeValid) {
+    absoluteFields = "\"start_unix_ms\":" + String(startUnixMs) + ",\"start_utc\":\"" + String(startUtc) +
+      "\",\"browser_timezone_offset_min\":" + String(activeTimezoneOffsetMin);
+  } else {
+    absoluteFields = "\"start_unix_ms\":null,\"start_utc\":null,\"browser_timezone_offset_min\":null";
+  }
   session.printf("{\"schema_version\":\"knx-long-session-1.0\",\"firmware\":\"KNXAnalyzerField-s3-analog-v0\",\"sample_rate_hz\":%u,"
                  "\"sample_type\":\"uint16_le\",\"chunk_samples\":%u,\"chunk_bytes\":%u,"
                  "\"capture_mode\":\"%s\",\"trigger_profile\":\"%s\",\"d44_threshold\":%u,"
                  "\"pre_samples\":%u,\"post_samples\":%u,\"adc_gpio\":1,"
-                 "\"camera\":false,\"microphone\":false}\n",
+                 "\"time_schema_version\":\"1.0\",\"time_source\":\"%s\",\"absolute_time_valid\":%s,"
+                 "%s,\"monotonic_origin_us\":\"%llu\",\"camera\":false,\"microphone\":false}\n",
                  SAMPLE_RATE, CHUNK_SAMPLES, CHUNK_BYTES,
                  captureMode == CaptureMode::CONTINUOUS ? "CONTINUOUS_DIAGNOSTIC" : "EVENT",
-                 detection.profile, detection.d44Threshold, detection.preSamples, detection.postSamples);
+                 detection.profile, detection.d44Threshold, detection.preSamples, detection.postSamples,
+                 timeSourceName(activeTimeSource), absoluteTimeValid ? "true" : "false",
+                 absoluteFields.c_str(), startedUs);
   session.flush(); session.close();
   stopRequested = false; producerDrained = false;
-  startedUs = esp_timer_get_time(); closedUs = 0;
   if (!adcHandle || adc_continuous_start(adcHandle) != ESP_OK) { state = State::FAILED; return false; }
   state = State::RUNNING;
   Serial.printf("{\"type\":\"START\",\"dir\":\"%s\",\"source\":\"ADC_GPIO1\",\"mode\":\"%s\","
@@ -947,6 +1001,13 @@ void printStatus() {
                 syntheticRecoveryFailures.load(), currentRecoveryBackoffMs, maxRecoveryBackoffMs,
                 lostChunksTotal.load(), longestGapUs,
                 cumulativeStorageOutageUs);
+  Serial.printf("{\"type\":\"TIME_REFERENCE\",\"session_dir\":\"%s\",\"time_schema_version\":\"1.0\","
+                "\"time_source\":\"%s\",\"absolute_time_valid\":%s,\"start_unix_ms\":",
+                sessionDir.c_str(), timeSourceName(activeTimeSource), absoluteTimeValid ? "true" : "false");
+  if (absoluteTimeValid) Serial.printf("%llu,\"start_utc\":\"%s\",\"browser_timezone_offset_min\":%d,",
+                                      startUnixMs, startUtc, activeTimezoneOffsetMin);
+  else Serial.print("null,\"start_utc\":null,\"browser_timezone_offset_min\":null,");
+  Serial.printf("\"monotonic_origin_us\":\"%llu\"}\n", startedUs);
 }
 
 const char *sdTypeName(sdcard_type_t type) {
@@ -1043,6 +1104,7 @@ void inspectSession(const String &folder, uint64_t targetSeq) {
   printFile(base + "/gaps.jsonl", "gaps.jsonl");
   printFile(base + "/storage-transitions.jsonl", "storage-transitions.jsonl");
   printFile(base + "/segments.jsonl", "segments.jsonl");
+  printFile(base + "/session-start.json", "session-start.json");
   printFile(base + "/test-result.json", "test-result.json");
 }
 
@@ -1133,6 +1195,7 @@ void handleCommand(String command) {
       requestedDurationUs = uint64_t(seconds) * 1000000ULL;
     }
 #if S3_NETWORK_ENABLED
+    prepareTimeNone();
     if (!s3net::stopForCapture()) { Serial.println("ERROR START WIFI_NOT_OFF"); return; }
 #endif
     Serial.println(startRun() ? "OK START" : "ERROR START");

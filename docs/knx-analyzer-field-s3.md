@@ -88,3 +88,27 @@ The final manual Web OTA installed `KNXAnalyzerField-s3-analog-v0.4-web-ota-test
 - Real KNX analog connection and analog auto-calibration.
 - Later TP-UART/NCN interface.
 - Potential Web OTA security hardening.
+
+## Time reference V0.4.1
+
+Session chronology separates the always-valid local monotonic clock from an optional absolute UTC anchor. Sample, event, segment and GAP offsets remain monotonic and do not depend on UTC availability or changes.
+
+`session-start.json` keeps schema `knx-long-session-1.0` and adds these optional, additive fields:
+
+- `time_schema_version`: `"1.0"`
+- `time_source`: `"NTP"`, `"BROWSER"`, or `"NONE"`
+- `absolute_time_valid`: JSON boolean
+- `start_unix_ms`: JSON integer when valid, otherwise `null`
+- `start_utc`: ISO-8601 UTC with milliseconds when valid, otherwise `null`
+- `monotonic_origin_us`: decimal uint64 string from `esp_timer_get_time()`
+- `browser_timezone_offset_min`: signed JSON integer for BROWSER, otherwise `null`
+
+Web START sends `Date.now()` and the browser timezone offset automatically. Firmware relates that request-time UTC value to the actual acquisition monotonic origin. A local/serial START records `NONE`, false validity and null absolute values; it never stores a placeholder date. NTP is represented in the source model and has higher intended priority, but no NTP synchronization was added or validated in this focused milestone.
+
+Sessions written before V0.4.1 remain compatible because all new fields are additive. Their missing time metadata must be interpreted as `absolute_time_valid=false` and `time_source=NONE`.
+
+Short validation results:
+
+- BROWSER: 60.058 s, `CLOSED/COMPLETE`, valid Unix/ISO UTC anchor and monotonic origin, invariant true.
+- NONE: 60.108 s, `CLOSED/COMPLETE`, `start_unix_ms=null`, `start_utc=null`, invariant true.
+- Reboot: SD remained `HEALTHY`, STA/AP profiles persisted, Dashboard HTTP 200, active version `KNXAnalyzerField-s3-analog-v0.4.1-time`.
