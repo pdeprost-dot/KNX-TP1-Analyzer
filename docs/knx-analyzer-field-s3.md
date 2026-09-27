@@ -112,3 +112,10 @@ Short validation results:
 - BROWSER: 60.058 s, `CLOSED/COMPLETE`, valid Unix/ISO UTC anchor and monotonic origin, invariant true.
 - NONE: 60.108 s, `CLOSED/COMPLETE`, `start_unix_ms=null`, `start_utc=null`, invariant true.
 - Reboot: SD remained `HEALTHY`, STA/AP profiles persisted, Dashboard HTTP 200, active version `KNXAnalyzerField-s3-analog-v0.4.1-time`.
+
+Studio should derive a presentation-only session name from metadata without renaming SD folders or technical identifiers:
+
+- valid absolute time: `DD-MM-YYYY HH:MM:SS — <Analyzer ID> — <duration>`
+- invalid absolute time: `UNSYNCED — <Analyzer ID> — <duration>`
+
+Example: `27-09-2026 17:25:17 — KNX-Analyzer-A994 — 1 min`. The displayed local date is presentation only; canonical metadata remains UTC and monotonic offsets remain the interval reference.
