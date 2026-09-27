@@ -23,7 +23,15 @@ public sealed record NetworkSessionInfo(
     [property: JsonPropertyName("schema_version")] string SchemaVersion,
     [property: JsonPropertyName("events")] int? Events,
     [property: JsonPropertyName("valid_raw_bytes")] string RawBytes,
-    [property: JsonPropertyName("duration_us")] string DurationUs);
+    [property: JsonPropertyName("duration_us")] string DurationUs,
+    [property: JsonPropertyName("start_utc")] string? StartUtc = null,
+    [property: JsonPropertyName("completion_status")] string? CompletionStatus = null,
+    [property: JsonPropertyName("calibration_crc")] string? CalibrationCrc = null,
+    [property: JsonPropertyName("threshold")] int? Threshold = null,
+    [property: JsonPropertyName("confidence")] string? Confidence = null)
+{
+    public string DisplayName => $"{(string.IsNullOrWhiteSpace(StartUtc) ? "UNSYNCED" : StartUtc)}  ·  {SessionId}  ·  {State}/{CompletionStatus}";
+}
 
 public sealed record NetworkSessionContext(Uri BaseUri, string AnalyzerId, string SessionUuid, string Folder, string CacheDirectory);
 public sealed record NetworkImportProgress(string Stage, long Downloaded = 0, long? Total = null, bool FromCache = false);
@@ -43,7 +51,7 @@ public sealed class NetworkImportService : IDisposable
         var value = hostOrUrl.Trim();
         if (!value.Contains("://", StringComparison.Ordinal)) value = "http://" + value;
         BaseUri = new Uri(value.TrimEnd('/') + "/", UriKind.Absolute);
-        _http = handler is null ? new HttpClient() : new HttpClient(handler);
+        _http = handler is null ? new HttpClient(new HttpClientHandler { UseProxy = false }) : new HttpClient(handler);
         _http.BaseAddress = BaseUri;
         _http.Timeout = TimeSpan.FromSeconds(20);
         _cacheRoot = cacheRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KNXAnalyzerStudio", "Cache");
@@ -58,7 +66,7 @@ public sealed class NetworkImportService : IDisposable
 
     public async Task<IReadOnlyList<NetworkSessionInfo>> ListSessionsAsync(CancellationToken ct = default)
     {
-        using var doc = await GetDocumentAsync("api/sessions", ct);
+        using var doc = await GetDocumentAsync("api/v1/sessions", ct);
         return doc.RootElement.GetProperty("sessions").Deserialize<NetworkSessionInfo[]>() ?? [];
     }
 
@@ -66,22 +74,35 @@ public sealed class NetworkImportService : IDisposable
     {
         if (Analyzer is null) await ConnectAsync(ct);
         progress?.Report(new("metadata"));
-        using var manifest = await GetDocumentAsync($"api/sessions/{Uri.EscapeDataString(info.Folder)}/manifest", ct);
+        using var manifest = await GetDocumentAsync($"api/v1/sessions/{Uri.EscapeDataString(info.Folder)}", ct);
         var sessionUuid = string.IsNullOrWhiteSpace(info.SessionId) ? info.Folder : info.SessionId;
-        var cache = Path.Combine(_cacheRoot, SafePart(Analyzer!.AnalyzerId), SafePart(sessionUuid));
-        Directory.CreateDirectory(cache);
-        await WriteJsonAsync(Path.Combine(cache, "session-start.json"), manifest.RootElement.GetProperty("session_start"), ct);
-        if (manifest.RootElement.TryGetProperty("test_result", out var result) && result.ValueKind == JsonValueKind.Object)
-            await WriteJsonAsync(Path.Combine(cache, "test-result.json"), result, ct);
-        var files = manifest.RootElement.GetProperty("files");
-        foreach (var name in new[] { "segments.jsonl", "chunks.jsonl", "chunk-index.jsonl", "events.jsonl" }) {
-            var descriptor = files.GetProperty(name);
-            if (!descriptor.GetProperty("present").GetBoolean()) continue;
-            var expected = long.Parse(descriptor.GetProperty("bytes").GetString()!);
-            var target = Path.Combine(cache, name);
-            if (File.Exists(target) && new FileInfo(target).Length == expected) { progress?.Report(new("cache", expected, expected, true)); continue; }
-            await DownloadSmallAsync(descriptor.GetProperty("url").GetString()!, target, expected, ct);
-            progress?.Report(new("downloaded", expected, expected));
+        var localName = LocalSessionName(info, sessionUuid);
+        var analyzerCache = Path.Combine(_cacheRoot, SafePart(Analyzer!.AnalyzerId));
+        var cache = Path.Combine(analyzerCache, localName);
+        var complete = Path.Combine(cache, ".metadata-complete");
+        if (!File.Exists(complete)) {
+            Directory.CreateDirectory(analyzerCache);
+            var staging = cache + ".importing-" + Guid.NewGuid().ToString("N");
+            Directory.CreateDirectory(staging);
+            try {
+                await WriteJsonAsync(Path.Combine(staging, "session-start.json"), manifest.RootElement.GetProperty("session_start"), ct);
+                if (manifest.RootElement.TryGetProperty("test_result", out var result) && result.ValueKind == JsonValueKind.Object)
+                    await WriteJsonAsync(Path.Combine(staging, "test-result.json"), result, ct);
+                var files = manifest.RootElement.GetProperty("files");
+                foreach (var name in new[] { "segments.jsonl", "chunks.jsonl", "chunk-index.jsonl", "events.jsonl" }) {
+                    var descriptor = files.GetProperty(name);
+                    if (!descriptor.GetProperty("present").GetBoolean()) continue;
+                    var expected = ReadInt64(descriptor.GetProperty("bytes"));
+                    await DownloadSmallAsync(descriptor.GetProperty("url").GetString()!, Path.Combine(staging, name), expected, ct);
+                    progress?.Report(new("downloaded", expected, expected));
+                }
+                _ = EventRawV2Reader.OpenSession(staging);
+                await File.WriteAllTextAsync(Path.Combine(staging, ".metadata-complete"), sessionUuid, ct);
+                if (Directory.Exists(cache)) Directory.Delete(cache, true);
+                Directory.Move(staging, cache);
+            } catch { if (Directory.Exists(staging)) Directory.Delete(staging, true); throw; }
+        } else {
+            progress?.Report(new("metadata cache", FromCache: true));
         }
         var session = EventRawV2Reader.OpenSession(cache);
         session.Network = new(BaseUri, Analyzer.AnalyzerId, sessionUuid, info.Folder, cache);
@@ -97,7 +118,7 @@ public sealed class NetworkImportService : IDisposable
             .FirstOrDefault(x => U64(x.RootElement, "event_id") == eventId)
             ?? throw new InvalidDataException($"Event {eventId} was not found.");
         using (eventJson) {
-            var item = eventJson.RootElement; ulong eventStart = U64(item, "sample_start"); ulong eventEnd = U64(item, "sample_end"); ulong trigger = U64(item, "sample_trigger");
+            var item = eventJson.RootElement; ulong eventStart = U64(item, "sample_start"); ulong eventEnd = U64(item, "sample_end"); ulong trigger = U64Either(item, "sample_trigger", "trigger_sample");
             var chunks = File.ReadLines(Path.Combine(context.CacheDirectory, "chunks.jsonl")).Where(x => !string.IsNullOrWhiteSpace(x)).Select(ParseChunk)
                 .Where(x => x.SampleStart < eventEnd && x.SampleEnd > eventStart).OrderBy(x => x.SampleStart).ToArray();
             var samples = new List<ushort>(checked((int)(eventEnd - eventStart))); ulong expected = eventStart; bool crcValid = true;
@@ -123,7 +144,7 @@ public sealed class NetworkImportService : IDisposable
         var part = final + ".part"; long have = File.Exists(part) ? new FileInfo(part).Length : 0; if (have > chunk.RawBytes) { File.Delete(part); have = 0; }
         while (have < chunk.RawBytes) {
             var start = chunk.Offset + have; var end = chunk.Offset + chunk.RawBytes - 1;
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"api/sessions/{Uri.EscapeDataString(context.Folder)}/files/raw-{chunk.Segment:D4}.bin");
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"api/v1/sessions/{Uri.EscapeDataString(context.Folder)}/files/raw-{chunk.Segment:D4}.bin");
             request.Headers.Range = new RangeHeaderValue(start, end); using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
             if (response.StatusCode != HttpStatusCode.PartialContent) throw new InvalidDataException($"Expected HTTP 206, got {(int)response.StatusCode}.");
             var range = response.Content.Headers.ContentRange; var length = response.Content.Headers.ContentLength;
@@ -138,12 +159,18 @@ public sealed class NetworkImportService : IDisposable
     private static Chunk ParseChunk(string line) { using var doc = JsonDocument.Parse(line); var r = doc.RootElement; return new(U64(r,"sample_start"),U64(r,"sample_end"),r.GetProperty("segment_index").GetInt32(),long.Parse(r.GetProperty("segment_offset").GetString()!),r.GetProperty("raw_bytes").GetInt32(),Convert.ToUInt32(r.GetProperty("crc32").GetString(),16)); }
     private sealed record Chunk(ulong SampleStart, ulong SampleEnd, int Segment, long Offset, int RawBytes, uint Crc32);
     private static ulong U64(JsonElement e, string name) { var v=e.GetProperty(name); return v.ValueKind==JsonValueKind.String?ulong.Parse(v.GetString()!):v.GetUInt64(); }
+    private static ulong U64Either(JsonElement e, string first, string second) => e.TryGetProperty(first, out _) ? U64(e, first) : U64(e, second);
+    private static long ReadInt64(JsonElement value) => value.ValueKind == JsonValueKind.String ? long.Parse(value.GetString()!) : value.GetInt64();
     private async Task<T> GetJsonAsync<T>(string path, CancellationToken ct) => (await GetDocumentAsync(path, ct)).RootElement.Deserialize<T>() ?? throw new InvalidDataException(path);
     private async Task<JsonDocument> GetDocumentAsync(string path, CancellationToken ct) { using var r = await _http.GetAsync(path, ct); r.EnsureSuccessStatusCode(); return JsonDocument.Parse(await r.Content.ReadAsStreamAsync(ct)); }
     private async Task DownloadSmallAsync(string url, string target, long expected, CancellationToken ct) { using var r=await _http.GetAsync(url.TrimStart('/'),ct);r.EnsureSuccessStatusCode();var tmp=target+".tmp";await using(var i=await r.Content.ReadAsStreamAsync(ct))await using(var o=new FileStream(tmp,FileMode.Create,FileAccess.Write,FileShare.None,8192,true))await i.CopyToAsync(o,ct);if(new FileInfo(tmp).Length!=expected)throw new InvalidDataException("Metadata length mismatch.");File.Move(tmp,target,true); }
     private static async Task WriteJsonAsync(string path, JsonElement value, CancellationToken ct) { var tmp=path+".tmp";await File.WriteAllTextAsync(tmp,value.GetRawText(),ct);File.Move(tmp,path,true); }
     private static string SafePart(string value) => string.Concat(value.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '_'));
-    private void RememberAnalyzer(AnalyzerInfo a) { Directory.CreateDirectory(_cacheRoot); File.WriteAllText(Path.Combine(_cacheRoot,"known-analyzer.txt"),BaseUri.ToString()); var standard=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"KNXAnalyzerStudio","Cache");Directory.CreateDirectory(standard);File.WriteAllText(Path.Combine(standard,"known-analyzer.txt"),BaseUri.ToString()); }
+    private static string LocalSessionName(NetworkSessionInfo info, string sessionUuid) {
+        if (DateTimeOffset.TryParse(info.StartUtc, out var start)) return $"{start.ToLocalTime():yyyy-MM-dd_HH-mm-ss}_{SafePart(sessionUuid)}";
+        return SafePart(sessionUuid);
+    }
+    private void RememberAnalyzer(AnalyzerInfo a) { Directory.CreateDirectory(_cacheRoot); File.WriteAllText(Path.Combine(_cacheRoot,"known-analyzer.txt"),BaseUri.ToString()); }
     public static uint Crc32(ReadOnlySpan<byte> data) { uint crc=0xFFFFFFFF;foreach(var b in data){crc^=b;for(var i=0;i<8;i++)crc=(crc>>1)^((crc&1)!=0?0xEDB88320u:0u);}return crc^0xFFFFFFFF; }
     public void Dispose() => _http.Dispose();
 }

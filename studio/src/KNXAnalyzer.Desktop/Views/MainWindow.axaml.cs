@@ -128,6 +128,11 @@ public partial class MainWindow : Window
         if (DataContext is MainViewModel vm) await vm.OpenNetworkAsync();
     }
 
+    private async void ImportNetworkSessionClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is MainViewModel vm) await vm.ImportSelectedNetworkSessionAsync();
+    }
+
     private void PathKeyDown(object? sender, KeyEventArgs e)
     {
         if (e.Key == Key.Enter && DataContext is MainViewModel vm) vm.OpenFolder(vm.FolderPath);

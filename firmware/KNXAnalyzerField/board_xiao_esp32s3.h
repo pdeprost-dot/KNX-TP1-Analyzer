@@ -3,6 +3,10 @@
 #include <Arduino.h>
 #include <driver/adc.h>
 
+#ifndef BOARD_HAS_PSRAM
+#error "KNXAnalyzerField requires XIAO ESP32-S3 OPI PSRAM. Build with PSRAM=opi using tools/build-knx-analyzer-field.ps1."
+#endif
+
 namespace board {
 constexpr const char *NAME = "XIAO_ESP32S3_SENSE";
 constexpr gpio_num_t ANALOG_GPIO = GPIO_NUM_1;       // D0 / ADC1_CH0
@@ -10,4 +14,5 @@ constexpr adc_channel_t ADC_CHANNEL = ADC_CHANNEL_0;
 constexpr uint8_t FUTURE_UART_TX = 43;               // D6, reserved
 constexpr uint8_t FUTURE_UART_RX = 44;               // D7, reserved
 constexpr uint8_t SD_CS = 21, SD_SCK = 7, SD_MISO = 8, SD_MOSI = 9;
+constexpr size_t REQUIRED_PSRAM_BYTES = 7U * 1024U * 1024U;
 }

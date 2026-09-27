@@ -13,7 +13,7 @@
 #include "auto_calibration.h"
 
 #define S3_NETWORK_ENABLED 1
-constexpr const char *FIRMWARE_VERSION = "KNXAnalyzerField-s3-analog-v0.5.0-autocal-v1";
+constexpr const char *FIRMWARE_VERSION = "KNXAnalyzerField-s3-analog-v0.6.0-session-api-v1";
 
 // Headless KNX Analyzer Field bring-up. Real ADC; no KNX bus, display, touch,
 // camera, microphone, or future UART is initialized in this milestone.
@@ -59,6 +59,7 @@ String sessionDir;
 std::atomic<State> state{State::IDLE};
 std::atomic<StorageState> storageState{StorageState::HEALTHY};
 std::atomic<bool> stopRequested{false}, producerDrained{true}, writerActive{false};
+bool fatalConfiguration = false;
 std::atomic<uint64_t> producedSamples{0}, producedChunks{0}, rawBytes{0}, lostSamples{0};
 std::atomic<uint64_t> ignoredSamples{0}, storedSamples{0};
 std::atomic<uint32_t> poolExhaustion{0}, sdErrors{0}, r1Count{0}, rawHandleFailures{0}, retryFailures{0}, reopenFailures{0};
@@ -1329,6 +1330,16 @@ void handleCommand(String command) {
 void setup() {
   Serial.begin(115200);
   delay(1200);
+  const size_t psramBytes = ESP.getPsramSize();
+  const bool psramReady = psramFound() && psramBytes >= board::REQUIRED_PSRAM_BYTES;
+  Serial.printf("{\"type\":\"PSRAM_CHECK\",\"required\":true,\"detected\":%s,\"bytes\":%u,\"minimum_bytes\":%u}\n",
+                psramReady ? "true" : "false", unsigned(psramBytes), unsigned(board::REQUIRED_PSRAM_BYTES));
+  if (!psramReady) {
+    fatalConfiguration = true;
+    state = State::FAILED;
+    Serial.println("{\"type\":\"FATAL_CONFIGURATION\",\"reason\":\"PSRAM_REQUIRED\",\"action\":\"Build with PSRAM=opi\"}");
+    return;
+  }
   sdSpi.begin(board::SD_SCK, board::SD_MISO, board::SD_MOSI, board::SD_CS);
   sdReady = SD.begin(board::SD_CS, sdSpi, SD_HZ, "/sd", SD_MAX_FILES);
   readyQ = xQueueCreate(CHUNK_COUNT, sizeof(Chunk *));
@@ -1377,6 +1388,10 @@ void setup() {
 }
 
 void loop() {
+  if (fatalConfiguration) {
+    delay(1000);
+    return;
+  }
   calibration.servicePersistence();
 #if S3_NETWORK_ENABLED
   s3net::tick();

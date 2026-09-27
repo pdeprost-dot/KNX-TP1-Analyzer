@@ -66,6 +66,26 @@ No private session, RAW capture, validation bundle, or local SDK belongs in Git.
 - Physical power-cycle restored the same calibration directly from NVS and
   resumed IDLE observation with STA/AP/Web and storage healthy.
 
+## KNX Analyzer Field S3 Session API V1
+
+- Firmware V0.6 exposes a read-only session list, manifest and whitelisted
+  session files over LAN; RAW supports HTTP Range and remains unavailable
+  while capturing or finalizing.
+- Studio lists remote sessions, imports metadata atomically, and downloads only
+  the selected event RAW through its persistent CRC-validated cache. The real
+  session **KNX-F35F14A4** was validated with 18 events and 983040 RAW bytes.
+- XIAO Field builds require the canonical FQBN
+  `esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=cdc,PartitionScheme=default_8MB,PSRAM=opi`.
+  A sketch-local compile guard rejects builds without OPI PSRAM, and an early
+  runtime guard requires a detected capacity of at least 7 MiB before any
+  acquisition, calibration or network initialization.
+- The canonical Web OTA path was revalidated: PSRAM enabled, pre-Wi-Fi internal
+  heap about 105 kB, STA/AP/HTTP restored, calibration NVS unchanged, and the
+  Session API readable after autonomous reboot.
+- Studio validation: .NET SDK **10.0.401**, Release build successful, Core
+  **17/17** and Desktop **4/4** tests passing. NU1900 remains an environmental
+  warning because the NuGet vulnerability feed was unavailable.
+
 ## Next gate
 
 Do not start another acquisition or a new milestone automatically.

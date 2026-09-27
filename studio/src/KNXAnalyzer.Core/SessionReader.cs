@@ -71,7 +71,7 @@ public sealed class AnalogEvent
     public ulong? TimestampUs => U64("trigger_timestamp_us") ?? U64("timestamp_us") ?? U64("monotonic_us");
     public ulong? SampleStart => U64("sample_start");
     public ulong? SampleEnd => U64("sample_end");
-    public ulong? SampleTrigger => U64("sample_trigger");
+    public ulong? SampleTrigger => U64("sample_trigger") ?? U64("trigger_sample");
     public string Kind => Text("event_type") ?? Text("type") ?? Text("reason") ?? TriggerSource();
     public string PositionText => TimestampUs is ulong timestamp ? FormatPosition(timestamp)
         : SampleTrigger is ulong trigger ? $"sample {trigger:N0}" : "unknown";

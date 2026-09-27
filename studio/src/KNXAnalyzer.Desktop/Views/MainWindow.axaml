@@ -5,6 +5,10 @@
     <DockPanel Grid.Row="0" LastChildFill="True">
       <Button DockPanel.Dock="Right" Content="Open SD / Sessions Folder" Click="OpenClicked" Margin="8,0,0,0" />
       <Button DockPanel.Dock="Right" Content="Network" Click="NetworkClicked" Margin="8,0,0,0" />
+      <Button DockPanel.Dock="Right" Content="Import selected" Click="ImportNetworkSessionClicked" Margin="8,0,0,0" />
+      <ComboBox DockPanel.Dock="Right" Width="360" ItemsSource="{Binding NetworkSessions}" SelectedItem="{Binding SelectedNetworkSession}">
+        <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis"/></DataTemplate></ComboBox.ItemTemplate>
+      </ComboBox>
       <TextBox DockPanel.Dock="Right" Width="220" Text="{Binding NetworkHost}" PlaceholderText="Analyzer hostname / IP" />
       <Button DockPanel.Dock="Right" Content="Générer lot complet" Click="BatchClicked" Margin="8,0,0,0" />
       <Button DockPanel.Dock="Right" Content="Export JSON" Click="ExportJsonClicked" Margin="8,0,0,0" />

@@ -46,6 +46,27 @@ public class SessionReaderTests
     }
 
     [Fact]
+    public void ReadsS3TriggerSampleAliasAndLifecycle()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "knxstudio-s3-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try {
+            File.WriteAllText(Path.Combine(folder, "session-start.json"), """{"schema_version":"knx-long-session-1.0","session_id":"KNX-S3","start_utc":"2026-09-27T18:03:36.528Z"}""");
+            File.WriteAllText(Path.Combine(folder, "test-result.json"), """{"lifecycle":"CLOSED","duration_us":"60094291","raw_bytes":"8"}""");
+            File.WriteAllText(Path.Combine(folder, "events.jsonl"), """{"event_id":"1","sample_start":"10","trigger_sample":"11","sample_end":"14","trigger_timestamp_us":"120"}""" + Environment.NewLine);
+            var raw = new byte[8]; var crc = NetworkImportService.Crc32(raw);
+            File.WriteAllText(Path.Combine(folder, "chunks.jsonl"), $"{{\"sample_start\":\"10\",\"sample_end\":\"14\",\"sample_count\":4,\"segment_index\":0,\"segment_offset\":\"0\",\"raw_bytes\":8,\"crc32\":\"{crc:X8}\"}}" + Environment.NewLine);
+            File.WriteAllBytes(Path.Combine(folder, "raw-0000.bin"), raw);
+
+            var session = EventRawV2Reader.OpenSession(folder);
+            Assert.Equal("CLOSED", session.State);
+            Assert.Equal("2026-09-27T18:03:36.528Z", session.DateTime);
+            Assert.Equal((ulong)11, Assert.Single(session.AnalogEvents).SampleTrigger);
+            Assert.Equal((uint)1, EventRawV2Reader.ReadCapture(folder, 1).TriggerIndex);
+        } finally { Directory.Delete(folder, true); }
+    }
+
+    [Fact]
     public void ReadsRealFirmwareFieldNamesAndSurvivesFutureAndCorruptLines()
     {
         var root = Path.Combine(Path.GetTempPath(), "knxstudio-test-" + Guid.NewGuid().ToString("N"));

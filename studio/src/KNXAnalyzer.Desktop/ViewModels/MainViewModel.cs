@@ -14,6 +14,7 @@ public partial class MainViewModel : ViewModelBase
 {
     private NetworkImportService? networkImport;
     public ObservableCollection<Session> Sessions { get; } = [];
+    public ObservableCollection<NetworkSessionInfo> NetworkSessions { get; } = [];
     public ObservableCollection<Tp1Candidate> VisibleCandidates { get; } = [];
     public ObservableCollection<AnalogEvent> AnalogEvents { get; } = [];
     public ObservableCollection<ParticipantDisplay> Participants { get; } = [];
@@ -29,6 +30,7 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty] private string networkHost = NetworkImportService.RememberedAnalyzer;
     [ObservableProperty] private string networkAnalyzer = "No network Analyzer connected.";
     [ObservableProperty] private string networkProgress = "";
+    [ObservableProperty] private NetworkSessionInfo? selectedNetworkSession;
     [ObservableProperty] private string status = "Open an SD root, sessions folder, or one session folder.";
     [ObservableProperty] private Session? selectedSession;
     [ObservableProperty] private Tp1Candidate? selectedCandidate;
@@ -95,11 +97,21 @@ public partial class MainViewModel : ViewModelBase
             networkImport?.Dispose(); networkImport = new NetworkImportService(NetworkHost);
             var analyzer = await networkImport.ConnectAsync();
             NetworkAnalyzer = $"{analyzer.Hostname} · {analyzer.AnalyzerId} · {analyzer.Ip} · RSSI {analyzer.Rssi} dBm · {analyzer.FirmwareVersion} · {analyzer.State} · SD {(analyzer.SdReady ? "READY" : "ERROR")}";
-            var remote = await networkImport.ListSessionsAsync(); Sessions.Clear();
-            var progress = new Progress<NetworkImportProgress>(x => NetworkProgress = x.FromCache ? $"cache · {x.Downloaded} bytes" : x.Total is long total ? $"{x.Stage} · {x.Downloaded}/{total}" : x.Stage);
-            foreach (var descriptor in remote) Sessions.Add(await networkImport.ImportMetadataAsync(descriptor, progress));
-            FolderPath = $"NETWORK {networkImport.BaseUri}"; RefreshTrafficAnalysis(); SelectedSession = Sessions.FirstOrDefault();
-            NetworkProgress = "metadata ready"; Status = $"{Sessions.Count} network session(s). RAW will be fetched on demand.";
+            var remote = await networkImport.ListSessionsAsync(); NetworkSessions.Clear();
+            foreach (var descriptor in remote.OrderByDescending(x => x.StartUtc).ThenByDescending(x => x.SessionId)) NetworkSessions.Add(descriptor);
+            SelectedNetworkSession = NetworkSessions.FirstOrDefault();
+            FolderPath = $"NETWORK {networkImport.BaseUri}";
+            NetworkProgress = "session list ready"; Status = $"{NetworkSessions.Count} network session(s). Select one, then import metadata.";
+        } catch (Exception e) { Status = $"Network import: {e.Message}"; NetworkProgress = "error"; }
+    }
+    public async Task ImportSelectedNetworkSessionAsync()
+    {
+        if (networkImport is null || SelectedNetworkSession is null) return;
+        try {
+            var progress = new Progress<NetworkImportProgress>(x => NetworkProgress = x.FromCache ? $"cache · {x.Stage}" : x.Total is long total ? $"{x.Stage} · {x.Downloaded}/{total}" : x.Stage);
+            var session = await networkImport.ImportMetadataAsync(SelectedNetworkSession, progress);
+            Sessions.Clear(); Sessions.Add(session); RefreshTrafficAnalysis(); SelectedSession = session;
+            NetworkProgress = "metadata validated"; Status = "Session imported. Event RAW will be fetched and CRC-checked on demand.";
         } catch (Exception e) { Status = $"Network import: {e.Message}"; NetworkProgress = "error"; }
     }
     private void RefreshTrafficAnalysis()

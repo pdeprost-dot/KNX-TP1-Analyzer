@@ -28,13 +28,14 @@ public static class EventRawV2Reader
             var start = startDoc.RootElement;
             id = String(start, "session_id") ?? String(start, "session_uuid") ?? id;
             analyzer = String(start, "analyzer_id") is { } analyzerId ? $"LOCAL / SD · {analyzerId}" : analyzer;
-            dateTime = String(start, "date_time");
+            dateTime = String(start, "start_utc") ?? String(start, "date_time");
         }
         long? durationMs = null;
         if (File.Exists(metadataPath)) {
             using var doc = JsonDocument.Parse(File.ReadAllText(metadataPath));
             metadata = doc.RootElement.Clone();
-            state = metadata.TryGetProperty("closed", out var closed) && closed.ValueKind == JsonValueKind.True ? "CLOSED" : "INTERRUPTED";
+            state = String(metadata, "lifecycle") ??
+                (metadata.TryGetProperty("closed", out var closed) && closed.ValueKind == JsonValueKind.True ? "CLOSED" : "INTERRUPTED");
             if (metadata.TryGetProperty("duration_us", out var duration)) {
                 if (duration.ValueKind == JsonValueKind.Number && duration.TryGetInt64(out var us)) durationMs = us / 1000;
                 else if (duration.ValueKind == JsonValueKind.String && long.TryParse(duration.GetString(), out us)) durationMs = us / 1000;
@@ -93,7 +94,7 @@ public static class EventRawV2Reader
         if (item.ValueKind == JsonValueKind.Undefined) throw new InvalidDataException($"Event ${eventId} was not found.");
         var eventStart = U64(item, "sample_start");
         var eventEnd = U64(item, "sample_end");
-        var trigger = U64(item, "sample_trigger");
+        var trigger = U64Either(item, "sample_trigger", "trigger_sample");
         var segmented = !File.Exists(Path.Combine(directory, "raw.bin"));
         var chunks = File.ReadLines(Path.Combine(directory, "chunks.jsonl"))
             .Where(line => !string.IsNullOrWhiteSpace(line))
@@ -148,6 +149,9 @@ public static class EventRawV2Reader
         var value = element.GetProperty(name);
         return value.ValueKind == JsonValueKind.String ? ulong.Parse(value.GetString()!) : value.GetUInt64();
     }
+
+    private static ulong U64Either(JsonElement element, string first, string second) =>
+        element.TryGetProperty(first, out _) ? U64(element, first) : U64(element, second);
 
     private static uint Crc32(ReadOnlySpan<byte> data)
     {
