@@ -6,6 +6,39 @@ namespace KNXAnalyzer.Core.Tests;
 public class SessionReaderTests
 {
     [Fact]
+    public void ReadsBoundedContinuousRawRangeAndValidatesOnlyOverlappingChunks()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "knxstudio-continuous-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try {
+            File.WriteAllText(Path.Combine(folder, "session-start.json"), """{"schema_version":"knx-long-session-1.1","session_id":"continuous-test","acquisition_mode":"CONTINUOUS_RAW","sample_rate_hz":83333}""");
+            File.WriteAllText(Path.Combine(folder, "test-result.json"), """{"lifecycle":"CLOSED","duration_us":"96","raw_bytes":"16"}""");
+            File.WriteAllText(Path.Combine(folder, "events.jsonl"), "");
+            var first = new byte[8]; var second = new byte[8];
+            for (var i = 0; i < 4; ++i) {
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(first.AsSpan(i * 2), (ushort)(100 + i));
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(second.AsSpan(i * 2), (ushort)(104 + i));
+            }
+            var crc1 = NetworkImportService.Crc32(first); var crc2 = NetworkImportService.Crc32(second);
+            File.WriteAllText(Path.Combine(folder, "chunks.jsonl"),
+                $"{{\"sample_start\":\"0\",\"sample_end\":\"4\",\"sample_count\":4,\"segment_index\":0,\"segment_offset\":\"0\",\"raw_bytes\":8,\"crc32\":\"{crc1:X8}\"}}\n" +
+                $"{{\"sample_start\":\"4\",\"sample_end\":\"8\",\"sample_count\":4,\"segment_index\":0,\"segment_offset\":\"8\",\"raw_bytes\":8,\"crc32\":\"{crc2:X8}\"}}\n");
+            File.WriteAllBytes(Path.Combine(folder, "raw-0000.bin"), [.. first, .. second]);
+
+            var session = EventRawV2Reader.OpenSession(folder);
+            Assert.True(session.IsContinuousRaw);
+            Assert.Equal("CONTINUOUS_RAW", session.AcquisitionMode);
+            Assert.Equal((ulong)0, session.RawSampleStart);
+            Assert.Equal((ulong)8, session.RawSampleEnd);
+            Assert.Empty(session.AnalogEvents);
+            var range = ContinuousRawReader.Read(folder, 2, 4);
+            Assert.Equal(new ushort[] { 102, 103, 104, 105 }, range.Samples);
+            Assert.Equal(2, range.ValidatedChunkCount);
+            Assert.Equal(RawIntegrityStatus.Valid, range.Integrity);
+        } finally { Directory.Delete(folder, true); }
+    }
+
+    [Fact]
     public void OpensSegmentedFieldSessionFromMetadataAndReadsOnlySelectedEventChunks()
     {
         var folder = Path.Combine(Path.GetTempPath(), "knxstudio-segmented-" + Guid.NewGuid().ToString("N"));

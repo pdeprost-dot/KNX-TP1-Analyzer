@@ -51,6 +51,8 @@ public static class EventRawV2Reader
         session.DetectionThreshold = checked((uint)(U64Optional(startMetadata, "d44_threshold") ?? 0));
         session.PreTriggerSamples = checked((uint)(U64Optional(startMetadata, "pre_samples") ?? 0));
         session.PostTriggerSamples = checked((uint)(U64Optional(startMetadata, "post_samples") ?? 0));
+        session.AcquisitionMode = String(startMetadata, "acquisition_mode") ??
+            String(startMetadata, "capture_mode") ?? "EVENT";
         session.RawChunks.AddRange(ReadChunks(full));
         var line = 0;
         foreach (var text in File.ReadLines(Path.Combine(full, "events.jsonl"))) {

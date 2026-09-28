@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Globalization;
+using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -14,8 +15,17 @@ public class WaveformView : Control
         AvaloniaProperty.Register<WaveformView, RawCapture?>(nameof(Capture));
     public static readonly StyledProperty<bool> D44ModeProperty =
         AvaloniaProperty.Register<WaveformView, bool>(nameof(D44Mode));
+    public static readonly StyledProperty<Tp1DecodeResult?> DecodeProperty =
+        AvaloniaProperty.Register<WaveformView, Tp1DecodeResult?>(nameof(Decode));
+    public static readonly StyledProperty<bool> ShowTp1OverlaysProperty =
+        AvaloniaProperty.Register<WaveformView, bool>(nameof(ShowTp1Overlays), true);
+    public static readonly StyledProperty<OfflineTp1Candidate?> SelectedRecordProperty =
+        AvaloniaProperty.Register<WaveformView, OfflineTp1Candidate?>(nameof(SelectedRecord));
     public RawCapture? Capture { get => GetValue(CaptureProperty); set => SetValue(CaptureProperty, value); }
     public bool D44Mode { get => GetValue(D44ModeProperty); set => SetValue(D44ModeProperty, value); }
+    public Tp1DecodeResult? Decode { get => GetValue(DecodeProperty); set => SetValue(DecodeProperty, value); }
+    public bool ShowTp1Overlays { get => GetValue(ShowTp1OverlaysProperty); set => SetValue(ShowTp1OverlaysProperty, value); }
+    public OfflineTp1Candidate? SelectedRecord { get => GetValue(SelectedRecordProperty); set => SetValue(SelectedRecordProperty, value); }
 
     public event EventHandler<string>? ViewportChanged;
     public event EventHandler<(double Start, double End)>? ViewportSamplesChanged;
@@ -34,7 +44,7 @@ public class WaveformView : Control
     private bool _dragging;
     private double _lastDragX;
 
-    static WaveformView() => AffectsRender<WaveformView>(CaptureProperty, D44ModeProperty);
+    static WaveformView() => AffectsRender<WaveformView>(CaptureProperty, D44ModeProperty, DecodeProperty, ShowTp1OverlaysProperty, SelectedRecordProperty);
 
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
@@ -278,6 +288,50 @@ public class WaveformView : Control
         if (capture.TriggerIndex >= start && capture.TriggerIndex <= end) {
             var triggerX = plotLeft + (capture.TriggerIndex - start) * plotWidth / span;
             context.DrawLine(new Pen(Brushes.OrangeRed, 1), new Point(triggerX, 0), new Point(triggerX, height));
+        }
+        if (ShowTp1Overlays && Decode is { } decode)
+            DrawTp1Overlays(context, decode, SelectedRecord, start, end, plotLeft, plotWidth, height);
+    }
+
+    private static void DrawTp1Overlays(DrawingContext context, Tp1DecodeResult decode, OfflineTp1Candidate? selected, double start,
+        double end, double plotLeft, double plotWidth, double height)
+    {
+        var span = end - start;
+        if (span <= 0) return;
+        double X(double sample) => plotLeft + (sample - start) * plotWidth / span;
+        foreach (var pulse in decode.Pulses.Where(x => x.EndSample >= start && x.StartSample <= end)) {
+            var left = Math.Max(plotLeft, X(pulse.StartSample));
+            var right = Math.Min(plotLeft + plotWidth, X(pulse.EndSample));
+            context.FillRectangle(new SolidColorBrush(Color.FromArgb(42, 255, 140, 0)),
+                new Rect(left, 0, Math.Max(1, right - left), height));
+        }
+        foreach (var record in decode.Records.Where(x => x.EndSample >= start && x.StartSample <= end)) {
+            var isSelected = selected is not null && selected.StartSample == record.StartSample && selected.EndSample == record.EndSample;
+            var invalid = record.Classification is not (Tp1RecordClassification.VALID_KNOWN or Tp1RecordClassification.VALID_UNKNOWN);
+            var brush = record.KnownControl != Tp1KnownControl.None ? Brushes.Goldenrod : invalid ? Brushes.OrangeRed : Brushes.SeaGreen;
+            var pen = new Pen(brush, isSelected ? 4 : 2);
+            var left = X(record.StartSample); var right = X(record.EndSample);
+            if (isSelected)
+                context.FillRectangle(new SolidColorBrush(Color.FromArgb(35, 30, 144, 255)),
+                    new Rect(Math.Max(plotLeft, left), 0, Math.Max(1, Math.Min(plotLeft + plotWidth, right) - Math.Max(plotLeft, left)), height));
+            context.DrawLine(pen, new Point(left, 1), new Point(left, height));
+            context.DrawLine(pen, new Point(right, 1), new Point(right, height));
+            var label = record.KnownControl == Tp1KnownControl.None
+                ? $"{record.RawHex} · {record.Classification}" : $"{record.KnownControl} {record.RawHex}";
+            context.DrawText(new FormattedText(label, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                new Typeface("Inter"), 10, brush), new Point(Math.Max(plotLeft, left + 3), 3));
+            foreach (var character in record.Characters.Where(x => x.EndSample >= start && x.StartSample <= end)) {
+                var charPen = new Pen(character.Errors.Count == 0 ? Brushes.SteelBlue : Brushes.Red, 1);
+                context.DrawLine(charPen, new Point(X(character.StartSample), height * 0.72), new Point(X(character.StartSample), height));
+                if (span <= 3000) {
+                    context.DrawText(new FormattedText($"{character.Value:X2}", CultureInfo.InvariantCulture,
+                        FlowDirection.LeftToRight, new Typeface("Consolas"), 10, charPen.Brush),
+                        new Point(X(character.StartSample) + 2, height * 0.72));
+                    foreach (var slot in character.Slots)
+                        context.DrawLine(new Pen(slot.TimingErrorSamples is { } error && Math.Abs(error) > 3 ? Brushes.Red : Brushes.SlateGray, 0.7),
+                            new Point(X(slot.ExpectedSample), height * 0.88), new Point(X(slot.ExpectedSample), height));
+                }
+            }
         }
     }
 }

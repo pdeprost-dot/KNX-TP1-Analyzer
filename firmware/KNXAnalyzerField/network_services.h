@@ -16,15 +16,9 @@ namespace s3net {
 struct Snapshot {
   char captureState[12] = {}, storageState[12] = {}, completionStatus[40] = {}, ip[16] = {};
   int32_t rssi = 0;
-  uint64_t uptimeMs = 0, durationUs = 0, chunks = 0, samples = 0, rawBytes = 0, lostSamples = 0;
-  uint32_t r1 = 0, rawFailures = 0, retryFailures = 0, reopenFailures = 0, sdErrors = 0, gaps = 0;
-  uint32_t poolExhaustion = 0, freeMin = 0, pendingMax = 0, readyCurrent = 0, readyMax = 0;
-  uint32_t writeUsMax = 0, checkpointUsMax = 0, writerHoldUsMax = 0;
-  uint32_t heapInternalFree = 0, heapInternalMin = 0, heapDmaFree = 0, heapDmaMin = 0;
-  bool invariant = false, pass = false, staConnected = false;
-  uint64_t events = 0, excursions = 0;
-  uint32_t adcMin = 0, adcMax = 0, d44Max = 0, dmaOverflows = 0, adcErrors = 0;
-  double adcMean = 0;
+  uint64_t uptimeMs = 0, durationUs = 0, samples = 0, rawBytes = 0, lostSamples = 0, events = 0;
+  uint32_t gaps = 0;
+  bool staConnected = false;
   uint64_t sdTotal = 0, sdUsed = 0;
   char staSsid[33] = {}, apSsid[33] = {}, apIp[16] = {};
   bool apActive = false;
@@ -41,6 +35,7 @@ char hostname[40] = {};
 char apSsid[33] = {};
 uint32_t httpRequests = 0, httpErrors = 0, httpResponseUsMax = 0, staReconnects = 0, nextReconnectMs = 0;
 uint32_t networkStops = 0, networkStarts = 0;
+uint32_t loopTaskStackHighWaterMark = UINT32_MAX;
 bool networkActive = false, radioOffConfirmed = false;
 bool mdnsActive = false, otaActive = false, otaConfigured = false;
 bool captiveDnsActive = false;
@@ -68,21 +63,9 @@ void refreshSnapshot() {
   snprintf(snapshot.storageState, sizeof(snapshot.storageState), "%s", storageStateName(storageState.load()));
   snprintf(snapshot.completionStatus, sizeof(snapshot.completionStatus), "%s", completionStatus);
   snapshot.uptimeMs = millis(); snapshot.durationUs = startedUs ? end - startedUs : 0;
-  snapshot.chunks = producedChunks.load(); snapshot.samples = producedSamples.load(); snapshot.rawBytes = rawBytes.load();
-  snapshot.lostSamples = lostSamples.load(); snapshot.r1 = r1Count.load(); snapshot.rawFailures = rawHandleFailures.load();
-  snapshot.retryFailures = retryFailures.load(); snapshot.reopenFailures = reopenFailures.load(); snapshot.sdErrors = sdErrors.load();
-  snapshot.gaps = gapCount.load(); snapshot.poolExhaustion = poolExhaustion.load(); snapshot.freeMin = freeMin;
-  snapshot.pendingMax = pendingMax; snapshot.readyCurrent = readyQ ? uxQueueMessagesWaiting(readyQ) : 0; snapshot.readyMax = readyMax;
-  snapshot.writeUsMax = writeLatencyMaxUs; snapshot.checkpointUsMax = checkpointLatencyMaxUs; snapshot.writerHoldUsMax = writerHoldMaxUs;
-  snapshot.heapInternalFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  snapshot.heapInternalMin = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  snapshot.heapDmaFree = heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
-  snapshot.heapDmaMin = heap_caps_get_minimum_free_size(MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
-  snapshot.invariant = invariantOk; snapshot.pass = finalPass; snapshot.staConnected = WiFi.status() == WL_CONNECTED;
-  snapshot.events = eventCount; snapshot.excursions = excursionCount;
-  snapshot.adcMin = adcMin == UINT16_MAX ? 0 : adcMin; snapshot.adcMax = adcMax; snapshot.d44Max = d44Max;
-  snapshot.dmaOverflows = dmaOverflows.load(); snapshot.adcErrors = adcReadErrors.load();
-  snapshot.adcMean = producedSamples.load() ? double(adcSum) / producedSamples.load() : 0.0;
+  snapshot.samples = producedSamples.load(); snapshot.rawBytes = rawBytes.load();
+  snapshot.lostSamples = lostSamples.load(); snapshot.gaps = gapCount.load();
+  snapshot.events = eventCount; snapshot.staConnected = WiFi.status() == WL_CONNECTED;
   snapshot.rssi = snapshot.staConnected ? WiFi.RSSI() : 0;
   snprintf(snapshot.ip, sizeof(snapshot.ip), "%s", snapshot.staConnected ? WiFi.localIP().toString().c_str() : "");
   snprintf(snapshot.staSsid, sizeof(snapshot.staSsid), "%s", snapshot.staConnected ? WiFi.SSID().c_str() : "");
@@ -96,76 +79,43 @@ void refreshSnapshot() {
 
 void sendStatus() {
   const uint64_t started = esp_timer_get_time(); ++httpRequests;
-  char json[4300];
-  uint32_t chunkFree, chunkFilling, chunkHistory, chunkPending, chunkWriting;
-  countChunkStates(chunkFree, chunkFilling, chunkHistory, chunkPending, chunkWriting);
+  char json[2048];
   const String statusUnix = absoluteTimeValid ? String(startUnixMs) : "null";
   const String statusUtc = absoluteTimeValid ? "\"" + String(startUtc) + "\"" : "null";
-  snprintf(json, sizeof(json),
+  const int jsonBytes = snprintf(json, sizeof(json),
     "{\"api_version\":\"1.0\",\"firmware_version\":\"%s\",\"capture_state\":\"%s\",\"storage_state\":\"%s\","
+    "\"acquisition_mode\":\"%s\","
     "\"completion_status\":\"%s\",\"uptime_ms\":\"%llu\",\"duration_us\":\"%llu\","
-    "\"chunks\":\"%llu\",\"samples\":\"%llu\",\"raw_bytes\":\"%llu\","
-    "\"R1\":%u,\"raw_handle_failures\":%u,\"retry_failures\":%u,\"reopen_failures\":%u,"
-    "\"sd_errors\":%u,\"gaps\":%u,\"lost_samples\":\"%llu\",\"pool_exhaustion\":%u,"
-    "\"free_min\":%u,\"pending_max\":%u,\"ready_current\":%u,\"ready_max\":%u,"
-    "\"write_us_max\":%u,\"checkpoint_us_max\":%u,\"writer_hold_us_max\":%u,"
-    "\"heap_internal_free\":%u,\"heap_internal_min\":%u,\"heap_dma_free\":%u,\"heap_dma_min\":%u,"
+    "\"samples\":\"%llu\",\"raw_bytes\":\"%llu\",\"events\":\"%llu\","
+    "\"gaps\":%u,\"lost_samples\":\"%llu\",\"sd_ready\":%s,"
+    "\"sd_total_bytes\":\"%llu\",\"sd_used_bytes\":\"%llu\","
     "\"sta_connected\":%s,\"sta_ssid\":\"%s\",\"sta_ip\":\"%s\",\"rssi\":%d,\"sta_reconnects\":%u,"
-    "\"ap_active\":%s,\"ap_ssid\":\"%s\",\"ap_ip\":\"%s\",\"sd_total_bytes\":\"%llu\",\"sd_used_bytes\":\"%llu\","
-    "\"http_requests\":%u,\"http_errors\":%u,\"http_response_us_max\":%u,"
-    "\"pre_wifi_heap_ok\":%s,\"pre_wifi_internal_free\":%u,\"pre_wifi_internal_min\":%u,"
-    "\"pre_wifi_internal_largest\":%u,\"pre_wifi_dma_free\":%u,\"pre_wifi_dma_min\":%u,"
-    "\"events\":\"%llu\",\"excursions\":\"%llu\",\"adc_min\":%u,\"adc_max\":%u,"
-    "\"adc_mean\":%.3f,\"d44_max\":%u,\"dma_overflow\":%u,\"adc_read_errors\":%u,"
-    "\"first_dma_overflow_us\":\"%llu\",\"first_dma_overflow_sample\":\"%llu\","
-    "\"first_pool_exhaustion_us\":\"%llu\",\"first_pool_exhaustion_sample\":\"%llu\","
-    "\"first_pool_state\":{\"free\":%u,\"filling\":%u,\"history\":%u,\"pending\":%u,\"writing\":%u},"
-    "\"chunk_states\":{\"free\":%u,\"filling\":%u,\"history\":%u,\"pending\":%u,\"writing\":%u},"
-    "\"chunk_lifecycle_errors\":%u,\"released_selected_chunks\":%u,"
-    "\"pre_wifi_dma_largest\":%u,\"adc_task_stack_min_free\":%u,\"heap_integrity\":%s,"
-    "\"invariant\":%s,\"pass\":%s,\"time_schema_version\":\"1.0\","
+    "\"ap_active\":%s,\"ap_ssid\":\"%s\",\"ap_ip\":\"%s\","
+    "\"adc_ready\":%s,\"heap_integrity\":%s,\"loop_stack_high_water_mark\":%u,"
     "\"calibration_state\":\"%s\",\"calibration_reason\":\"%s\","
     "\"calibration_confidence\":%u,\"calibration_confidence_category\":\"%s\","
-    "\"calibration_noise_upper\":%u,\"calibration_activity_p10\":%u,"
     "\"calibration_independent_bursts\":%u,\"calibration_quiet_windows\":%u,"
-    "\"calibration_active_windows\":%u,\"calibration_candidate_threshold\":%u,"
-    "\"calibration_validated_threshold\":%u,\"calibration_observed_samples\":\"%llu\","
-    "\"calibration_adc_zero\":\"%llu\",\"calibration_adc_low16\":\"%llu\","
-    "\"calibration_adc_high4079\":\"%llu\",\"calibration_adc_max4095\":\"%llu\","
-    "\"calibration_schema\":\"knx-calibration-1.0\",\"calibration_algorithm\":\"d44-autocal-v1\","
-    "\"calibration_id_crc32\":\"%08X\",\"calibration_persisted\":%s,"
+    "\"calibration_validated_threshold\":%u,"
+    "\"time_schema_version\":\"1.0\","
     "\"time_source\":\"%s\",\"absolute_time_valid\":%s,\"start_unix_ms\":%s,\"start_utc\":%s,"
     "\"monotonic_origin_us\":\"%llu\"}",
-    FIRMWARE_VERSION, snapshot.captureState, snapshot.storageState, snapshot.completionStatus,
-    snapshot.uptimeMs, snapshot.durationUs, snapshot.chunks, snapshot.samples, snapshot.rawBytes,
-    snapshot.r1, snapshot.rawFailures, snapshot.retryFailures, snapshot.reopenFailures,
-    snapshot.sdErrors, snapshot.gaps, snapshot.lostSamples, snapshot.poolExhaustion,
-    snapshot.freeMin, snapshot.pendingMax, snapshot.readyCurrent, snapshot.readyMax,
-    snapshot.writeUsMax, snapshot.checkpointUsMax, snapshot.writerHoldUsMax,
-    snapshot.heapInternalFree, snapshot.heapInternalMin, snapshot.heapDmaFree, snapshot.heapDmaMin,
+    FIRMWARE_VERSION, snapshot.captureState, snapshot.storageState, captureModeName(captureMode), snapshot.completionStatus,
+    snapshot.uptimeMs, snapshot.durationUs, snapshot.samples, snapshot.rawBytes, snapshot.events,
+    snapshot.gaps, snapshot.lostSamples, sdReady ? "true" : "false", snapshot.sdTotal, snapshot.sdUsed,
     snapshot.staConnected ? "true" : "false", snapshot.staSsid, snapshot.ip, snapshot.rssi, staReconnects,
-    snapshot.apActive ? "true" : "false", snapshot.apSsid, snapshot.apIp, snapshot.sdTotal, snapshot.sdUsed,
-    httpRequests, httpErrors, httpResponseUsMax, preWifiHeapOk ? "true" : "false",
-    preWifiInternalFree, preWifiInternalMin, preWifiInternalLargest,
-    preWifiDmaFree, preWifiDmaMin, snapshot.events, snapshot.excursions,
-    snapshot.adcMin, snapshot.adcMax, snapshot.adcMean, snapshot.d44Max,
-    snapshot.dmaOverflows, snapshot.adcErrors, firstDmaOverflowUs, firstDmaOverflowSample,
-    firstPoolExhaustionUs, firstPoolExhaustionSample,
-    firstPoolFree, firstPoolFilling, firstPoolHistory, firstPoolPending, firstPoolWriting,
-    chunkFree, chunkFilling, chunkHistory, chunkPending, chunkWriting,
-    chunkLifecycleErrors.load(), releasedSelectedChunks.load(), preWifiDmaLargest,
-    adcTaskStackMinFree.load() == UINT32_MAX ? 0 : adcTaskStackMinFree.load(),
+    snapshot.apActive ? "true" : "false", snapshot.apSsid, snapshot.apIp,
+    adcHandle && adcDmaBuffer && producerHandle && state.load() != State::FAILED ? "true" : "false",
     heap_caps_check_integrity_all(false) ? "true" : "false",
-    snapshot.invariant ? "true" : "false", snapshot.pass ? "true" : "false",
+    loopTaskStackHighWaterMark == UINT32_MAX ? 0 : loopTaskStackHighWaterMark,
     autocal::stateName(calibration.state()), calibration.reason(),
-    calibration.confidence(), calibration.confidenceName(), calibration.noiseUpper(),
-    calibration.activityP10(), calibration.bursts(), calibration.quietWindows(),
-    calibration.activeWindows(), calibration.candidateThreshold(), calibration.validatedThreshold(),
-    calibration.observedSamples(), calibration.adcZero(), calibration.adcLow16(),
-    calibration.adcHigh4079(), calibration.adcMax4095(), calibration.identityCrc(),
-    calibration.persistedValid() ? "true" : "false",
+    calibration.confidence(), calibration.confidenceName(), calibration.bursts(), calibration.quietWindows(),
+    calibration.validatedThreshold(),
     timeSourceName(activeTimeSource), absoluteTimeValid ? "true" : "false",
     statusUnix.c_str(), statusUtc.c_str(), startedUs);
+  if (jsonBytes < 0 || size_t(jsonBytes) >= sizeof(json)) {
+    ++httpErrors; server.send(500, "application/json", "{\"error\":\"status_too_large\"}"); return;
+  }
+  server.sendHeader("X-KNX-Status-Bytes", String(jsonBytes));
   server.sendHeader("Cache-Control", "no-store"); server.send(200, "application/json", json);
   const uint32_t elapsed = uint32_t(esp_timer_get_time() - started);
   if (elapsed > httpResponseUsMax) httpResponseUsMax = elapsed;
@@ -173,7 +123,7 @@ void sendStatus() {
 
 constexpr char commonHead[] PROGMEM = R"HTML(<meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><style>body{margin:auto;max-width:900px;padding:18px;background:#101820;color:#eef;font:16px system-ui}nav{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}a{color:#53d8fb}nav a{background:#1c2935;padding:10px 13px;border-radius:8px;text-decoration:none}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}.card{background:#1c2935;border-radius:12px;padding:16px;margin:12px 0}.label{color:#9fb3c8;font-size:.78rem;text-transform:uppercase}.value{font:600 1.05rem ui-monospace,monospace;margin-top:4px;word-break:break-word}button,input,select{box-sizing:border-box;padding:11px;font:inherit;border-radius:7px;border:1px solid #607080;margin:4px 2px}button{background:#53d8fb;color:#07131b;font-weight:700;cursor:pointer}input,select{background:#101820;color:#fff;max-width:100%}.warn{border-left:4px solid #ffb454;padding-left:12px}.ok{color:#72e0a8}.bad{color:#ff7b72}pre{white-space:pre-wrap;word-break:break-word}.pw{display:flex;gap:4px;align-items:center;flex-wrap:wrap}.pw input{flex:1;min-width:180px}.scan{display:grid;grid-template-columns:1fr auto auto;gap:6px;align-items:center;padding:7px;border-bottom:1px solid #405060}</style>)HTML";
 constexpr char nav[] PROGMEM = R"HTML(<nav><a href=/>Dashboard</a><a href=/sessions>Sessions</a><a href=/network>Network</a><a href=/update>Update</a></nav>)HTML";
-constexpr char mainPage[] PROGMEM = R"HTML(<!doctype html><html lang=en><head><title>KNX Analyzer Field</title>%HEAD%</head><body>%NAV%<h1>KNX Analyzer Field</h1><p>Status is refreshed only on request. There is no automatic polling.</p><button onclick=load()>REFRESH STATUS</button><div class=grid id=cards></div><div class=card><h2>Last acquisition</h2><div id=last>Press REFRESH STATUS.</div></div><div class=card><h2>Start acquisition</h2><p class=warn>Wi-Fi, AP and all remote services will be disabled during acquisition. The Analyzer returns online only after storage finalization.</p><form id=start method=post action=/api/v1/start><label>Duration <select id=duration name=seconds><option value=60>1 min</option><option value=300>5 min</option><option value=600>10 min</option><option value=1800>30 min</option><option value=3600>1 h</option><option value=10800>3 h</option><option value=21600>6 h</option><option value=32400>9 h</option><option value=custom>Custom</option></select></label> <input id=custom name=custom_seconds type=number min=60 max=32400 placeholder="seconds" hidden> <input type=hidden id=start_unix_ms name=start_unix_ms><input type=hidden id=timezone_offset_min name=timezone_offset_min><input type=hidden name=time_source value=BROWSER><button>START</button></form></div><script>const fmt=n=>Number(n).toLocaleString();function card(k,v){return `<div class=card><div class=label>${k}</div><div class=value>${v??'-'}</div></div>`}async function load(){let d=await fetch('/api/v1/status',{cache:'no-store'}).then(r=>r.json());let free=Number(d.sd_total_bytes)-Number(d.sd_used_bytes);cards.innerHTML=[['Firmware',d.firmware_version],['Time',d.absolute_time_valid?new Date(Number(d.start_unix_ms)).toLocaleString()+'<br>'+d.time_source:'UNSYNCED<br>NONE'],['Analyzer',d.capture_state],['Completion',d.completion_status],['ADC',d.dma_overflow==0?'READY':'ERROR'],['Sample rate target','83,333 Hz'],['Last measured rate',d.duration_us>0?Math.round(Number(d.samples)/(Number(d.duration_us)/1e6)).toLocaleString()+' Hz':'-'],['Storage',d.storage_state],['SD free / total',fmt(free)+' / '+fmt(d.sd_total_bytes)],['STA',d.sta_connected?d.sta_ssid:'DISCONNECTED'],['IP',d.sta_ip],['RSSI',d.rssi+' dBm'],['AP',d.ap_active?d.ap_ssid+' '+d.ap_ip:'OFF'],['Uptime',Math.floor(Number(d.uptime_ms)/1000)+' s']].map(x=>card(x[0],x[1])).join('');let timing=d.absolute_time_valid?'Started: '+new Date(Number(d.start_unix_ms)).toLocaleString()+'<br>Ended: '+new Date(Number(d.start_unix_ms)+Number(d.duration_us)/1000).toLocaleString()+'<br>':'Started: UNSYNCED<br>';last.innerHTML=timing+`Duration: ${(+d.duration_us/1e6).toFixed(3)} s<br>Samples: ${fmt(d.samples)}<br>Events: ${fmt(d.events)}<br>Event RAW: ${fmt(d.raw_bytes)} bytes<br>Loss / gaps: ${d.lost_samples} / ${d.gaps}<br>EIO / R1 / R3: ${d.raw_handle_failures} / ${d.R1} / ${d.retry_failures}<br>Result: <b>${d.completion_status}</b>`}duration.onchange=()=>custom.hidden=duration.value!='custom';start.onsubmit=e=>{let s=duration.value=='custom'?+custom.value:+duration.value;if(!s||s<60||s>32400){e.preventDefault();alert('Duration must be 60..32400 seconds');return}let end=new Date(Date.now()+s*1000);if(!confirm(`Start ${s} seconds?\nApproximate end: ${end.toLocaleString()}\nWi-Fi will be switched off and the Analyzer will be unreachable until finalization.`)){e.preventDefault();return}start_unix_ms.value=Date.now();timezone_offset_min.value=new Date().getTimezoneOffset()};load()</script></body></html>)HTML";
+constexpr char mainPage[] PROGMEM = R"HTML(<!doctype html><html lang=en><head><title>KNX Analyzer Field</title>%HEAD%</head><body>%NAV%<h1>KNX Analyzer Field</h1><p>Status is refreshed only on request. There is no automatic polling.</p><button onclick=load()>REFRESH STATUS</button><div class=grid id=cards></div><div class=card><h2>Last acquisition</h2><div id=last>Press REFRESH STATUS.</div></div><div class=card><h2>Start acquisition</h2><p class=warn>Wi-Fi, AP and all remote services will be disabled during acquisition. The Analyzer returns online only after storage finalization.</p><form id=start method=post action=/api/v1/start><label>Acquisition mode <select id=mode name=acquisition_mode><option value=EVENT>Standard / Event</option><option value=CONTINUOUS_RAW>Continuous RAW</option></select></label><p id=modeHelp>Calibrated event capture. Stores RAW around detected KNX activity.</p><label>Duration <select id=duration name=seconds><option value=10>10 s (validation)</option><option value=60>1 min</option><option value=300 selected>5 min</option><option value=600>10 min</option><option value=1800>30 min</option><option value=3600>1 h</option><option value=custom>Custom</option></select></label> <input id=custom name=custom_seconds type=number min=10 max=32400 placeholder="seconds" hidden><div class=grid><label>Site <input name=site_label maxlength=64></label><label>Bus <input name=bus_label maxlength=64></label><label>Measurement point <input name=measurement_point maxlength=64></label></div><label>Operator note <input name=operator_note maxlength=160></label><div id=estimate></div><input type=hidden id=start_unix_ms name=start_unix_ms><input type=hidden id=timezone_offset_min name=timezone_offset_min><input type=hidden name=time_source value=BROWSER><button id=startButton>START</button></form></div><script>const fmt=n=>Number(n).toLocaleString();function card(k,v){return `<div class=card><div class=label>${k}</div><div class=value>${v??'-'}</div></div>`}async function load(){let d=await fetch('/api/v1/status',{cache:'no-store'}).then(r=>r.json());let free=Number(d.sd_total_bytes)-Number(d.sd_used_bytes);cards.innerHTML=[['Firmware',d.firmware_version],['Time',d.absolute_time_valid?new Date(Number(d.start_unix_ms)).toLocaleString()+'<br>'+d.time_source:'UNSYNCED<br>NONE'],['Analyzer',d.capture_state],['Mode',d.acquisition_mode],['Completion',d.completion_status],['ADC',d.adc_ready?'READY':'ERROR'],['Sample rate target','83,333 Hz'],['Last measured rate',d.duration_us>0?Math.round(Number(d.samples)/(Number(d.duration_us)/1e6)).toLocaleString()+' Hz':'-'],['Storage',d.storage_state],['SD free / total',fmt(free)+' / '+fmt(d.sd_total_bytes)],['STA',d.sta_connected?d.sta_ssid:'DISCONNECTED'],['IP',d.sta_ip],['RSSI',d.rssi+' dBm'],['AP',d.ap_active?d.ap_ssid+' '+d.ap_ip:'OFF'],['Uptime',Math.floor(Number(d.uptime_ms)/1000)+' s']].map(x=>card(x[0],x[1])).join('');let timing=d.absolute_time_valid?'Started: '+new Date(Number(d.start_unix_ms)).toLocaleString()+'<br>Ended: '+new Date(Number(d.start_unix_ms)+Number(d.duration_us)/1000).toLocaleString()+'<br>':'Started: UNSYNCED<br>';last.innerHTML=timing+`Mode: ${d.acquisition_mode}<br>Duration: ${(+d.duration_us/1e6).toFixed(3)} s<br>Samples: ${fmt(d.samples)}<br>Events: ${fmt(d.events)}<br>RAW: ${fmt(d.raw_bytes)} bytes<br>Loss / gaps: ${d.lost_samples} / ${d.gaps}<br>Result: <b>${d.completion_status}</b>`;window.sdFree=free;updateEstimate()}function seconds(){return duration.value=='custom'?+custom.value:+duration.value}function updateEstimate(){let continuous=mode.value=='CONTINUOUS_RAW',s=seconds()||0,b=s*83333*2;modeHelp.textContent=continuous?'Physical line recording. Stores every ADC sample continuously. Calibration is informative only.':'Calibrated event capture. Stores RAW around detected KNX activity.';estimate.innerHTML=continuous?`<b>CONTINUOUS RAW</b><br>Estimated RAW: ${fmt(b)} bytes<br>Sample rate: ~83.3 kS/s<br>Format: 16-bit little-endian<br>Free SD: ${fmt(window.sdFree||0)} bytes`:'';startButton.textContent=continuous?'START CONTINUOUS RAW':'START EVENT'}duration.onchange=()=>{custom.hidden=duration.value!='custom';updateEstimate()};mode.onchange=updateEstimate;custom.oninput=updateEstimate;start.onsubmit=e=>{let s=seconds(),min=mode.value=='CONTINUOUS_RAW'?10:60;if(!s||s<min||s>32400){e.preventDefault();alert(`Duration must be ${min}..32400 seconds`);return}let end=new Date(Date.now()+s*1000);if(!confirm(`Start ${mode.value} for ${s} seconds?\nApproximate end: ${end.toLocaleString()}\nWi-Fi will be switched off until finalization.`)){e.preventDefault();return}start_unix_ms.value=Date.now();timezone_offset_min.value=new Date().getTimezoneOffset()};load();updateEstimate()</script></body></html>)HTML";
 constexpr char sessionsPage[] PROGMEM = R"HTML(<!doctype html><html lang=en><head><title>Sessions</title>%HEAD%</head><body>%NAV%<h1>Sessions</h1><div class=card id=result>Loading last session...</div><p>This V2 exposes the current/last in-memory session only. No SD-wide session index is built.</p><script>fetch('/api/v1/status',{cache:'no-store'}).then(r=>r.json()).then(d=>result.innerHTML=`<h2>Last session</h2><p>State: <b>${d.capture_state} / ${d.completion_status}</b></p><p>Duration: ${(+d.duration_us/1e6).toFixed(3)} s<br>Events: ${d.events}<br>Samples: ${d.samples}<br>Data: ${d.raw_bytes} bytes<br>Loss / gaps: ${d.lost_samples} / ${d.gaps}<br>EIO / R1 / R3: ${d.raw_handle_failures} / ${d.R1} / ${d.retry_failures}</p>`)</script></body></html>)HTML";
 constexpr char networkPage[] PROGMEM = R"HTML(<!doctype html><html lang=en><head><title>Network</title>%HEAD%</head><body>%NAV%<h1>Network</h1><div class=card><pre id=status>Loading...</pre></div><div class=card><h2>Available Wi-Fi</h2><button type=button onclick=scan()>SCAN WI-FI</button><div id=scanResult>No scan requested.</div></div><form class=card id=nf method=post action=/api/v1/network><h2>Field Wi-Fi</h2><label>SSID <input name=field_ssid id=fs maxlength=32></label><div class=pw><input name=field_password id=fp type=password placeholder="Password (blank = unchanged)"><input name=field_password_confirm id=fpc type=password placeholder="Confirm password"><button type=button onclick=toggle('fp','fpc',this)>SHOW</button></div><label><input name=clear_field type=checkbox value=1> Clear profile</label><h2>Office Wi-Fi</h2><label>SSID <input name=office_ssid id=os maxlength=32></label><div class=pw><input name=office_password id=op type=password placeholder="Password (blank = unchanged)"><input name=office_password_confirm id=opc type=password placeholder="Confirm password"><button type=button onclick=toggle('op','opc',this)>SHOW</button></div><label><input name=clear_office type=checkbox value=1> Clear profile</label><h2>Analyzer AP</h2><div class=pw><input name=ap_password id=ap type=password minlength=8 placeholder="Password (blank = unchanged)"><input name=ap_password_confirm id=apc type=password minlength=8 placeholder="Confirm password"><button type=button onclick=toggle('ap','apc',this)>SHOW</button></div><button>SAVE AND APPLY</button></form><p>Connection order: Field first, then Office; each profile gets 15 seconds. After both fail, retry starts after 30 seconds. AP remains available outside acquisition. Hidden SSIDs can be entered manually.</p><script>function toggle(a,b,x){let show=document.getElementById(a).type=='password';document.getElementById(a).type=document.getElementById(b).type=show?'text':'password';x.textContent=show?'HIDE':'SHOW'}function pick(s,target){document.getElementById(target).value=s}async function scan(){scanResult.textContent='Scanning...';try{let a=await fetch('/api/v1/wifi-scan',{cache:'no-store'}).then(r=>r.json());scanResult.replaceChildren();if(!a.networks.length){scanResult.textContent='No network found.';return}for(const n of a.networks){let row=document.createElement('div'),name=document.createElement('span'),info=document.createElement('span'),actions=document.createElement('span'),bf=document.createElement('button'),bo=document.createElement('button');row.className='scan';name.textContent=n.ssid||'(hidden)';info.textContent=n.rssi+' dBm · '+n.security;bf.type=bo.type='button';bf.textContent='FIELD';bo.textContent='OFFICE';bf.onclick=()=>pick(n.ssid,'fs');bo.onclick=()=>pick(n.ssid,'os');actions.append(bf,bo);row.append(name,info,actions);scanResult.append(row)}}catch(e){scanResult.textContent='Scan failed — try again'}}nf.onsubmit=e=>{for(let p of [['fp','fpc'],['op','opc'],['ap','apc']])if(document.getElementById(p[0]).value!==document.getElementById(p[1]).value){e.preventDefault();alert('Password confirmation does not match');return}};fetch('/api/v1/network',{cache:'no-store'}).then(r=>r.json()).then(d=>{status.textContent=`STA: ${d.sta_connected?'CONNECTED':'DISCONNECTED'} ${d.sta_ssid} ${d.sta_ip}\nAP: ${d.ap_active?'ON':'OFF'} ${d.ap_ssid} ${d.ap_ip}\nField password: ${d.field_password_set?'configured':'not set'}\nOffice password: ${d.office_password_set?'configured':'not set'}`;fs.value=d.field_ssid;os.value=d.office_ssid})</script></body></html>)HTML";
 constexpr char updatePage[] PROGMEM = R"HTML(<!doctype html><html lang=en><head><title>Firmware Update</title>%HEAD%</head><body>%NAV%<h1>Firmware Update</h1><div class=card><p>Current version: <b>%VERSION%</b></p><p>Updates are accepted only in IDLE or CLOSED. Select an ESP32 application <code>.bin</code>; it is written to the inactive OTA partition and activated only after the official Update API validates the complete image.</p><form method=post action=/api/v1/update enctype=multipart/form-data onsubmit="return confirm('Install this firmware and reboot?')"><input type=file name=firmware accept=.bin,application/octet-stream required><button>UPDATE FIRMWARE</button></form></div></body></html>)HTML";
@@ -411,14 +361,25 @@ void begin() {
   server.on("/api/v1/start", HTTP_POST, [] {
     ++httpRequests;
     if (state.load() != State::IDLE && state.load() != State::CLOSED) { server.send(409, "application/json", "{\"accepted\":false,\"error\":\"state\"}"); return; }
-    if (!calibration.valid()) {
+    pendingCaptureMode = server.arg("acquisition_mode") == "CONTINUOUS_RAW" ? CaptureMode::CONTINUOUS_RAW : CaptureMode::EVENT;
+    if (pendingCaptureMode == CaptureMode::EVENT && !calibration.valid()) {
       const String json = "{\"accepted\":false,\"error\":\"calibration_required\",\"calibration_state\":\"" +
         String(autocal::stateName(calibration.state())) + "\",\"reason\":\"" + calibration.reason() + "\"}";
       server.send(409, "application/json", json); return;
     }
     uint32_t seconds = server.hasArg("seconds") ? strtoul(server.arg("seconds").c_str(), nullptr, 10) : 60;
     if (server.arg("seconds") == "custom") seconds = strtoul(server.arg("custom_seconds").c_str(), nullptr, 10);
-    if (seconds < 60 || seconds > 32400) { server.send(400, "application/json", "{\"accepted\":false,\"error\":\"duration_60_to_32400\"}"); return; }
+    const uint32_t minimumSeconds = pendingCaptureMode == CaptureMode::CONTINUOUS_RAW ? 10 : 60;
+    if (seconds < minimumSeconds || seconds > 32400) { server.send(400, "application/json", "{\"accepted\":false,\"error\":\"duration_out_of_range\"}"); return; }
+    const uint64_t estimatedRaw = uint64_t(seconds) * SAMPLE_RATE * sizeof(uint16_t);
+    const uint64_t freeBytes = SD.totalBytes() > SD.usedBytes() ? SD.totalBytes() - SD.usedBytes() : 0;
+    if (pendingCaptureMode == CaptureMode::CONTINUOUS_RAW && freeBytes < estimatedRaw + 16ULL * 1024ULL * 1024ULL) {
+      server.send(507, "application/json", "{\"accepted\":false,\"error\":\"insufficient_sd_space\",\"estimated_raw_bytes\":\"" + String(estimatedRaw) + "\",\"free_bytes\":\"" + String(freeBytes) + "\"}"); return;
+    }
+    pendingSiteLabel = server.arg("site_label").substring(0, 64);
+    pendingBusLabel = server.arg("bus_label").substring(0, 64);
+    pendingMeasurementPoint = server.arg("measurement_point").substring(0, 64);
+    pendingOperatorNote = server.arg("operator_note").substring(0, 160);
     if (server.arg("time_source") == "BROWSER" && server.hasArg("start_unix_ms")) {
       const uint64_t unixMs = strtoull(server.arg("start_unix_ms").c_str(), nullptr, 10);
       const int32_t timezoneOffset = strtol(server.arg("timezone_offset_min").c_str(), nullptr, 10);
@@ -492,12 +453,14 @@ void begin() {
 }
 
 void tick() {
-  refreshSnapshot();
   const State current = state.load();
   if ((current == State::CLOSED || current == State::FAILED || current == State::IDLE) && !networkActive) startNetwork();
   if (!networkActive) return;
+  refreshSnapshot();
   if (captiveDnsActive) dnsServer.processNextRequest();
   server.handleClient();
+  const uint32_t stackFree = uxTaskGetStackHighWaterMark(nullptr);
+  if (stackFree < loopTaskStackHighWaterMark) loopTaskStackHighWaterMark = stackFree;
   if (WiFi.status() == WL_CONNECTED && !mdnsActive) startSafeServices();
   if (otaConfigured && (current == State::IDLE || current == State::CLOSED)) ArduinoOTA.handle();
   if (rebootPending && int32_t(millis() - rebootAfterMs) >= 0) { delay(50); ESP.restart(); }
@@ -511,7 +474,7 @@ void tick() {
     connectSta(0); startSafeServices();
   }
   if (startPending && int32_t(millis() - startAfterMs) >= 0) {
-    startPending = false; requestedDurationUs = pendingDurationUs;
+    startPending = false; requestedDurationUs = pendingDurationUs; captureMode = pendingCaptureMode;
     stopIdleObservation();
     if (!stopForCapture() || !startRun()) {
       startIdleObservation();

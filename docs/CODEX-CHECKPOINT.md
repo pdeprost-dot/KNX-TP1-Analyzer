@@ -104,6 +104,50 @@ No private session, RAW capture, validation bundle, or local SDK belongs in Git.
   milestone adds no new TP1 decoding and keeps the existing decoder profiles
   unchanged.
 
+## Studio deterministic TP1 analysis — current development state
+
+- Core contains the recovered C6-derived deterministic pipeline from analog
+  pulses through bit slots, characters and bounded records, including parity,
+  timing, checksum, ACK/BUSY and incomplete/analog-undecoded diagnostics.
+- The RAW Viewer exposes synchronized pulse, slot/bit, character, record,
+  error and ACK overlays with interactive record navigation.
+- Historical **1600/1700** and FieldCandidate **1715/1815** remain explicit,
+  unchanged profiles. FieldCandidate has useful results on session
+  **KNX-F35F14A4**, but the decoder and thresholds are not claimed to be
+  universal or fully validated for every TP1 installation.
+
+## Continuous RAW V1 — XIAO qualification
+
+- Firmware schema **knx-long-session-1.1** adds `CONTINUOUS_RAW` while keeping
+  EVENT compatibility. Samples are authoritative `uint16_le`, in chunks of
+  **4096 samples / 8192 bytes** with sample intervals and per-chunk CRC32.
+- During Continuous RAW capture Wi-Fi is completely OFF and D44, TP1 decoding,
+  event selection and calibration filtering are not applied. The path is ADC
+  to DMA, fixed buffers and segmented SD storage only.
+- `session_duration_us` measures START-to-CLOSED wall time;
+  `adc_capture_duration_us` measures the actual ADC production window, and the
+  measured rate uses stored samples over that ADC duration.
+- The physical SD `manifest.json` is authoritative and streamed directly by
+  the Session API through the fixed-buffer, partial-write-safe file transport.
+  Studio imports metadata without loading the complete RAW and validates only
+  requested ranges/chunks through CRC.
+- Qualified sessions on the current XIAO ESP32-S3 and installed SD card:
+  - **KNX-9E1255F7**, ADC 9.979996 s, 831488 samples, 83315.464255 Hz,
+    1662976 bytes, 203 chunks;
+  - **KNX-AD3FC48E**, ADC 59.979802 s, 4998144 samples, 83330.451808 Hz,
+    9996288 bytes, 1221 chunks;
+  - **KNX-ECA32742**, ADC 299.976798 s, 24997888 samples, 83332.738287 Hz,
+    49995776 bytes, 6103 chunks.
+- All three have zero loss/gaps and pass Session API plus distributed Studio
+  CRC validation. The 300 s session also has zero DMA, ADC, SD and pool errors,
+  true heap/storage invariants and CLOSED/COMPLETE finalization.
+- Qualification conclusion: **Continuous RAW V1 is qualified on the tested
+  XIAO ESP32-S3 plus current SD for 300 s, from ADC through Studio.** It is not
+  generalized to other Analyzer hardware.
+- Known limits: ESP-IDF Wi-Fi deinitialization messages remain; the 60 s run
+  observed transient minima of 2464 internal bytes, 1876 DMA bytes and
+  884-byte largest blocks without corruption or failure.
+
 ## Next gate
 
 Do not start another acquisition or a new milestone automatically.

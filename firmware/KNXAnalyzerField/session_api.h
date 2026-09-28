@@ -8,6 +8,32 @@ static uint8_t transferBuffer[4096];
 uint64_t transferBytes = 0;
 uint32_t transferCount = 0, transferErrors = 0;
 
+bool writeAll(WiFiClient &client, const uint8_t *data, size_t length) {
+  size_t sent = 0; uint32_t noProgressSince = millis();
+  while (sent < length && client.connected()) {
+    const size_t written = client.write(data + sent, min<size_t>(1360, length - sent));
+    if (written) { sent += written; noProgressSince = millis(); }
+    else if (millis() - noProgressSince > 5000) return false;
+    else delay(1);
+  }
+  return sent == length;
+}
+
+bool sendJson(int code, const String &json) {
+  server.sendHeader("Cache-Control", "no-store");
+  server.sendHeader("Connection", "close");
+  server.setContentLength(json.length());
+  server.send(code, "application/json", "");
+  WiFiClient client = server.client();
+  client.setNoDelay(true);
+  const bool complete = writeAll(client, reinterpret_cast<const uint8_t *>(json.c_str()), json.length());
+  if (!complete) ++transferErrors;
+  transferBytes += complete ? json.length() : 0;
+  ++transferCount;
+  client.stop();
+  return complete;
+}
+
 String quote(const String &value) {
   String out; out.reserve(value.length() + 2); out += '"';
   for (char c : value) {
@@ -18,8 +44,7 @@ String quote(const String &value) {
 }
 
 void error(int code, const char *message) {
-  server.sendHeader("Cache-Control", "no-store");
-  server.send(code, "application/json", "{\"error\":" + quote(message) + "}");
+  sendJson(code, "{\"error\":" + quote(message) + "}");
 }
 
 bool safeLeaf(const String &value) {
@@ -38,7 +63,7 @@ bool allowedFile(const String &name) {
   static constexpr const char *fixed[] = {
     "session-start.json", "test-result.json", "events.jsonl", "chunks.jsonl",
     "segments.jsonl", "chunk-index.jsonl", "checkpoints.jsonl", "sd-incidents.jsonl",
-    "gaps.jsonl", "storage-transitions.jsonl"
+    "gaps.jsonl", "storage-transitions.jsonl", "session-end.json", "manifest.json"
   };
   for (const char *candidate : fixed) if (name == candidate) return true;
   if (!name.startsWith("raw-") || !name.endsWith(".bin") || name.length() != 12) return false;
@@ -96,12 +121,12 @@ void analyzer() {
   String id = "S3-"; id += String(uint32_t(ESP.getEfuseMac()), HEX); id.toUpperCase();
   String json = "{\"api_version\":\"1.0\",\"analyzer_id\":" + quote(id) +
     ",\"hostname\":" + quote(hostname) + ",\"firmware_version\":" + quote(FIRMWARE_VERSION) +
-    ",\"logger_schema\":\"knx-long-session-1.0\",\"raw_format\":\"segmented-v1\",\"state\":" +
+    ",\"logger_schema\":\"knx-long-session-1.1\",\"raw_format\":\"segmented-v1\",\"state\":" +
     quote(stateName(state.load())) + ",\"ip\":" + quote(WiFi.localIP().toString()) +
     ",\"rssi\":" + String(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0) +
     ",\"sd_ready\":" + String(sdReady ? "true" : "false") +
     ",\"ota_available\":" + String((state.load() == State::IDLE || state.load() == State::CLOSED) ? "true" : "false") + "}";
-  server.sendHeader("Cache-Control", "no-store"); server.send(200, "application/json", json);
+  sendJson(200, json);
 }
 
 void sessions() {
@@ -123,6 +148,7 @@ void sessions() {
           (start.length() ? "INTERRUPTED" : "UNKNOWN");
         if (!first) json += ','; first = false;
         json += "{\"folder\":" + quote(folder) + ",\"session_id\":" + quote(sessionId) +
+          ",\"acquisition_mode\":" + quote(scalar(start, "acquisition_mode").length() ? scalar(start, "acquisition_mode") : scalar(start, "capture_mode")) +
           ",\"state\":" + quote(stateValue) + ",\"completion_status\":" + quote(scalar(result, "completion_status")) +
           ",\"schema_version\":" + quote(scalar(start, "schema_version")) +
           ",\"events\":" + (scalar(result, "events_total").length() ? scalar(result, "events_total") : "null") +
@@ -142,13 +168,15 @@ void sessions() {
     root.close();
   }
   json += "]}";
-  server.sendHeader("Cache-Control", "no-store"); server.send(200, "application/json", json);
+  sendJson(200, json);
   resumeObservation(paused);
 }
 
 String fileRole(const String &name) {
   if (name == "session-start.json") return "session_start";
   if (name == "test-result.json") return "result";
+  if (name == "session-end.json") return "session_end";
+  if (name == "manifest.json") return "integrity_manifest";
   if (name == "events.jsonl") return "events";
   if (name == "chunks.jsonl") return "raw_map";
   if (name == "segments.jsonl") return "segments";
@@ -169,9 +197,19 @@ String fileDescriptor(const String &base, const String &session, const String &n
     (name.startsWith("raw-") ? ",\"integrity\":\"chunk_crc32\"" : "") + "}";
 }
 
+void file(const String &session, const String &name);
+
 void manifest(const String &session, const String &prefix) {
   if (!available()) { error(409, "capture_active"); return; }
   if (!safeSession(session)) { error(400, "invalid_session"); return; }
+  const String physicalPath = "/" + session + "/manifest.json";
+  File physical = SD.open(physicalPath, FILE_READ);
+  const bool physicalAvailable = physical && !physical.isDirectory();
+  if (physical) physical.close();
+  if (physicalAvailable) {
+    file(session, "manifest.json");
+    return;
+  }
   const bool paused = pauseObservation();
   const String base = "/" + session;
   File check = SD.open(base);
@@ -210,19 +248,8 @@ void manifest(const String &session, const String &prefix) {
     directory.close();
   }
   json += "],\"useful_bytes_approx\":" + quote(String(directoryBytes(base))) + "}";
-  server.sendHeader("Cache-Control", "no-store"); server.send(200, "application/json", json);
+  sendJson(200, json);
   resumeObservation(paused);
-}
-
-bool writeAll(WiFiClient &client, const uint8_t *data, size_t length) {
-  size_t sent = 0; uint32_t noProgressSince = millis();
-  while (sent < length && client.connected()) {
-    const size_t written = client.write(data + sent, min<size_t>(1360, length - sent));
-    if (written) { sent += written; noProgressSince = millis(); }
-    else if (millis() - noProgressSince > 5000) return false;
-    else delay(1);
-  }
-  return sent == length;
 }
 
 void file(const String &session, const String &name) {
@@ -271,7 +298,8 @@ void file(const String &session, const String &name) {
     if (count <= 0 || !writeAll(client, transferBuffer, count)) { ++transferErrors; break; }
     sent += count; yield();
   }
-  input.close(); transferBytes += sent; ++transferCount; client.stop();
+  input.close(); transferBytes += sent; ++transferCount;
+  client.stop();
   resumeObservation(paused);
 }
 

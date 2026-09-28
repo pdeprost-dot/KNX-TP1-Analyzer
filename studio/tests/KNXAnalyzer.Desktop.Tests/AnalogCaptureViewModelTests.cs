@@ -1,10 +1,36 @@
 using System.Buffers.Binary;
+using KNXAnalyzer.Core;
 using KNXAnalyzer.Desktop.ViewModels;
 
 namespace KNXAnalyzer.Desktop.Tests;
 
 public class AnalogCaptureViewModelTests
 {
+    [Fact]
+    public void FiltersAndNavigatesTp1RecordsWithinTheVisibleList()
+    {
+        var vm = new MainViewModel();
+        var valid = Record("AABB", Tp1RecordClassification.VALID_UNKNOWN);
+        var ack = Record("CC", Tp1RecordClassification.VALID_KNOWN, Tp1KnownControl.ACK);
+        var error = Record("C8", Tp1RecordClassification.INVALID_PARITY);
+        vm.OfflineRecordResults.Add(valid); vm.OfflineRecordResults.Add(ack); vm.OfflineRecordResults.Add(error);
+
+        vm.SelectedOfflineRecordFilter = "ACK";
+        Assert.Equal(ack, Assert.Single(vm.OfflineCandidates));
+        vm.SelectedOfflineRecordFilter = "Errors";
+        Assert.Equal(error, Assert.Single(vm.OfflineCandidates));
+        vm.SelectedOfflineRecordFilter = "All";
+        Assert.Equal(3, vm.OfflineCandidates.Count);
+        vm.SelectedOfflineCandidate = valid;
+        Assert.Equal(valid, vm.SelectedOfflineCandidate);
+        vm.SelectAdjacentOfflineRecord(1);
+        Assert.Equal(ack, vm.SelectedOfflineCandidate);
+        vm.SelectAdjacentOfflineRecord(1);
+        Assert.Equal(error, vm.SelectedOfflineCandidate);
+        vm.SelectAdjacentOfflineRecord(-1);
+        Assert.Equal(ack, vm.SelectedOfflineCandidate);
+    }
+
     [Fact]
     public void DistinguishesPendingRawAnalysisFromUnavailableData()
     {
@@ -58,6 +84,8 @@ public class AnalogCaptureViewModelTests
             Assert.Equal(4, vm.OfflineSampleCount);
             Assert.StartsWith("4", vm.OfflineDuration);
             Assert.Equal(0, vm.OfflineValidFrameCount);
+            Assert.NotNull(vm.SelectedTp1Decode);
+            Assert.True(vm.ShowTp1Overlays);
             Assert.Equal("historical", vm.SelectedOfflineProfile.Id);
             vm.SelectedOfflineProfile = KNXAnalyzer.Core.Tp1AnalogDecodeProfile.FieldCandidate;
             Assert.Contains("Experimental / field candidate", vm.OfflineAnalysisSummary);
@@ -109,4 +137,10 @@ public class AnalogCaptureViewModelTests
         }
         File.WriteAllLines(Path.Combine(folder, "events.jsonl"), lines);
     }
+
+    private static OfflineTp1Candidate Record(string raw, Tp1RecordClassification classification,
+        Tp1KnownControl control = Tp1KnownControl.None) => new(0, 100, 0, "negative", raw,
+            classification is Tp1RecordClassification.VALID_KNOWN or Tp1RecordClassification.VALID_UNKNOWN
+                ? OfflineAnalogClassification.TP1_VALID_FRAME : OfflineAnalogClassification.TP1_INVALID_PARITY,
+            classification == Tp1RecordClassification.INVALID_PARITY ? 1 : 0, 0, true, 0, 0, null, [], classification, control);
 }

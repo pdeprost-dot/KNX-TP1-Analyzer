@@ -27,7 +27,8 @@ public sealed record NetworkSessionInfo(
     [property: JsonPropertyName("completion_status")] string? CompletionStatus = null,
     [property: JsonPropertyName("calibration_crc")] string? CalibrationCrc = null,
     [property: JsonPropertyName("threshold")] int? Threshold = null,
-    [property: JsonPropertyName("confidence")] string? Confidence = null)
+    [property: JsonPropertyName("confidence")] string? Confidence = null,
+    [property: JsonPropertyName("acquisition_mode")] string? AcquisitionMode = null)
 {
     public string DisplayName => $"{(string.IsNullOrWhiteSpace(StartUtc) ? "UNSYNCED" : StartUtc)}  ·  {SessionId}  ·  {State}/{CompletionStatus}";
 }
@@ -74,6 +75,8 @@ public sealed class NetworkImportService : IDisposable
         if (Analyzer is null) await ConnectAsync(ct);
         progress?.Report(new("metadata"));
         using var manifest = await GetDocumentAsync($"api/v1/sessions/{Uri.EscapeDataString(info.Folder)}", ct);
+        var physicalContinuousManifest = manifest.RootElement.TryGetProperty("schema_version", out var manifestSchema) &&
+            manifestSchema.GetString() == "knx-continuous-raw-manifest-1.0";
         var sessionUuid = string.IsNullOrWhiteSpace(info.SessionId) ? info.Folder : info.SessionId;
         var localName = LocalSessionName(info, sessionUuid);
         var analyzerCache = Path.Combine(_cacheRoot, SafePart(Analyzer!.AnalyzerId));
@@ -84,16 +87,33 @@ public sealed class NetworkImportService : IDisposable
             var staging = cache + ".importing-" + Guid.NewGuid().ToString("N");
             Directory.CreateDirectory(staging);
             try {
-                await WriteJsonAsync(Path.Combine(staging, "session-start.json"), manifest.RootElement.GetProperty("session_start"), ct);
-                if (manifest.RootElement.TryGetProperty("test_result", out var result) && result.ValueKind == JsonValueKind.Object)
-                    await WriteJsonAsync(Path.Combine(staging, "test-result.json"), result, ct);
-                var files = manifest.RootElement.GetProperty("files");
-                foreach (var name in new[] { "segments.jsonl", "chunks.jsonl", "chunk-index.jsonl", "events.jsonl" }) {
-                    var descriptor = files.GetProperty(name);
-                    if (!descriptor.GetProperty("present").GetBoolean()) continue;
-                    var expected = ReadInt64(descriptor.GetProperty("bytes"));
-                    await DownloadSmallAsync(descriptor.GetProperty("url").GetString()!, Path.Combine(staging, name), expected, ct);
-                    progress?.Report(new("downloaded", expected, expected));
+                if (physicalContinuousManifest) {
+                    var prefix = $"api/v1/sessions/{Uri.EscapeDataString(info.Folder)}/files/";
+                    foreach (var name in new[] { "session-start.json", "test-result.json", "segments.jsonl", "chunks.jsonl",
+                                 "chunk-index.jsonl", "events.jsonl", "session-end.json", "manifest.json" }) {
+                        var received = await DownloadSmallAsync(prefix + name, Path.Combine(staging, name), null, ct);
+                        progress?.Report(new("downloaded", received, received));
+                    }
+                } else {
+                    await WriteJsonAsync(Path.Combine(staging, "session-start.json"), manifest.RootElement.GetProperty("session_start"), ct);
+                    if (manifest.RootElement.TryGetProperty("test_result", out var result) && result.ValueKind == JsonValueKind.Object)
+                        await WriteJsonAsync(Path.Combine(staging, "test-result.json"), result, ct);
+                    var files = manifest.RootElement.GetProperty("files");
+                    foreach (var name in new[] { "segments.jsonl", "chunks.jsonl", "chunk-index.jsonl", "events.jsonl" }) {
+                        var descriptor = files.GetProperty(name);
+                        if (!descriptor.GetProperty("present").GetBoolean()) continue;
+                        var expected = ReadInt64(descriptor.GetProperty("bytes"));
+                        await DownloadSmallAsync(descriptor.GetProperty("url").GetString()!, Path.Combine(staging, name), expected, ct);
+                        progress?.Report(new("downloaded", expected, expected));
+                    }
+                    if (manifest.RootElement.TryGetProperty("file_list", out var fileList)) {
+                        foreach (var item in fileList.EnumerateArray()) {
+                            var name = item.GetProperty("name").GetString();
+                            if (name is not ("manifest.json" or "session-end.json")) continue;
+                            var expected = ReadInt64(item.GetProperty("bytes"));
+                            await DownloadSmallAsync(item.GetProperty("url").GetString()!, Path.Combine(staging, name), expected, ct);
+                        }
+                    }
                 }
                 _ = EventRawV2Reader.OpenSession(staging);
                 await File.WriteAllTextAsync(Path.Combine(staging, ".metadata-complete"), sessionUuid, ct);
@@ -120,6 +140,15 @@ public sealed class NetworkImportService : IDisposable
             async (chunk, token) => await GetChunkAsync(context, chunk, progress, token), ct);
         progress?.Report(new("verification", capture.Samples.Length * 2, capture.Samples.Length * 2));
         return capture;
+    }
+
+    public async Task<RawSampleRange> FetchContinuousRangeAsync(Session session, ulong sampleStart, int sampleCount,
+        IProgress<NetworkImportProgress>? progress = null, CancellationToken ct = default)
+    {
+        if (!session.IsContinuousRaw) throw new InvalidOperationException("Session is not CONTINUOUS_RAW.");
+        var context = session.Network ?? throw new InvalidOperationException("Session is not network-backed.");
+        return await ContinuousRawReader.ReadAsync(session, sampleStart, sampleCount,
+            async (chunk, token) => await GetChunkAsync(context, chunk, progress, token), ct);
     }
 
     private async Task<byte[]> GetChunkAsync(NetworkSessionContext context, EventRawChunk chunk, IProgress<NetworkImportProgress>? progress, CancellationToken ct)
@@ -151,7 +180,7 @@ public sealed class NetworkImportService : IDisposable
     private static long ReadInt64(JsonElement value) => value.ValueKind == JsonValueKind.String ? long.Parse(value.GetString()!) : value.GetInt64();
     private async Task<T> GetJsonAsync<T>(string path, CancellationToken ct) => (await GetDocumentAsync(path, ct)).RootElement.Deserialize<T>() ?? throw new InvalidDataException(path);
     private async Task<JsonDocument> GetDocumentAsync(string path, CancellationToken ct) { using var r = await _http.GetAsync(path, ct); r.EnsureSuccessStatusCode(); return JsonDocument.Parse(await r.Content.ReadAsStreamAsync(ct)); }
-    private async Task DownloadSmallAsync(string url, string target, long expected, CancellationToken ct) { using var r=await _http.GetAsync(url.TrimStart('/'),ct);r.EnsureSuccessStatusCode();var tmp=target+".tmp";await using(var i=await r.Content.ReadAsStreamAsync(ct))await using(var o=new FileStream(tmp,FileMode.Create,FileAccess.Write,FileShare.None,8192,true))await i.CopyToAsync(o,ct);if(new FileInfo(tmp).Length!=expected)throw new InvalidDataException("Metadata length mismatch.");File.Move(tmp,target,true); }
+    private async Task<long> DownloadSmallAsync(string url, string target, long? expected, CancellationToken ct) { using var r=await _http.GetAsync(url.TrimStart('/'),HttpCompletionOption.ResponseHeadersRead,ct);r.EnsureSuccessStatusCode();var declared=r.Content.Headers.ContentLength;if(expected.HasValue&&declared.HasValue&&declared.Value!=expected.Value)throw new InvalidDataException("Metadata Content-Length mismatch.");var tmp=target+".tmp";await using(var i=await r.Content.ReadAsStreamAsync(ct))await using(var o=new FileStream(tmp,FileMode.Create,FileAccess.Write,FileShare.None,8192,true))await i.CopyToAsync(o,ct);var received=new FileInfo(tmp).Length;var required=expected??declared??throw new InvalidDataException("Metadata Content-Length is missing.");if(received!=required)throw new InvalidDataException("Metadata length mismatch.");File.Move(tmp,target,true);return received; }
     private static async Task WriteJsonAsync(string path, JsonElement value, CancellationToken ct) { var tmp=path+".tmp";await File.WriteAllTextAsync(tmp,value.GetRawText(),ct);File.Move(tmp,path,true); }
     private static string SafePart(string value) => string.Concat(value.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '_'));
     private static string LocalSessionName(NetworkSessionInfo info, string sessionUuid) {

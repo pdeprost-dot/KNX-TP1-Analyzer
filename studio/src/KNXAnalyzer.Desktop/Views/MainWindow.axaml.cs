@@ -147,6 +147,14 @@ public partial class MainWindow : Window
     {
         if (DataContext is MainViewModel vm) vm.SelectAdjacentEvent(1);
     }
+    private void PreviousRecordClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is MainViewModel vm) vm.SelectAdjacentOfflineRecord(-1);
+    }
+    private void NextRecordClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is MainViewModel vm) vm.SelectAdjacentOfflineRecord(1);
+    }
 
     private async void OpenClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {

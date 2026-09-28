@@ -5,6 +5,60 @@ namespace KNXAnalyzer.Core.Tests;
 public class NetworkImportServiceTests
 {
     [Fact]
+    public async Task ImportsLiveContinuousRawMetadataAndReadsBoundedRangesWhenConfigured()
+    {
+        var address = Environment.GetEnvironmentVariable("KNX_ANALYZER_LIVE_URL");
+        var sessionId = Environment.GetEnvironmentVariable("KNX_ANALYZER_LIVE_SESSION");
+        var expectedSamplesText = Environment.GetEnvironmentVariable("KNX_ANALYZER_LIVE_SAMPLES");
+        var expectedBytesText = Environment.GetEnvironmentVariable("KNX_ANALYZER_LIVE_BYTES");
+        var expectedChunksText = Environment.GetEnvironmentVariable("KNX_ANALYZER_LIVE_CHUNKS");
+        if (string.IsNullOrWhiteSpace(address) || string.IsNullOrWhiteSpace(sessionId) ||
+            !ulong.TryParse(expectedSamplesText, out var expectedSamples) ||
+            !long.TryParse(expectedBytesText, out var expectedBytes) ||
+            !int.TryParse(expectedChunksText, out var expectedChunks)) return;
+
+        var cache = Path.Combine(Path.GetTempPath(), "knxstudio-live-continuous-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var service = new NetworkImportService(address, cache, new HttpClientHandler { UseProxy = false });
+            await service.ConnectAsync();
+            var descriptor = (await service.ListSessionsAsync()).Single(x => x.SessionId == sessionId);
+            var session = await service.ImportMetadataAsync(descriptor);
+            Assert.True(session.IsContinuousRaw);
+            Assert.Equal("CONTINUOUS_RAW", session.AcquisitionMode);
+            Assert.Equal((ulong)0, session.RawSampleStart);
+            Assert.Equal(expectedSamples, session.RawSampleEnd);
+            Assert.Equal(expectedBytes, session.RawAvailableBytes);
+            Assert.Equal(expectedChunks, session.RawChunks.Count);
+            ulong nextSample = 0;
+            long mappedBytes = 0;
+            foreach (var chunk in session.RawChunks.OrderBy(x => x.SampleStart))
+            {
+                Assert.Equal(nextSample, chunk.SampleStart);
+                nextSample = chunk.SampleEnd;
+                mappedBytes += chunk.RawBytes;
+            }
+            Assert.Equal(expectedSamples, nextSample);
+            Assert.Equal(expectedBytes, mappedBytes);
+            Assert.Empty(session.AnalogEvents);
+            Assert.False(File.Exists(Path.Combine(session.DirectoryPath, "raw-0000.bin")));
+
+            foreach (var start in new ulong[] { 0, expectedSamples / 4, expectedSamples / 2,
+                         expectedSamples * 3 / 4, expectedSamples - 64 })
+            {
+                var range = await service.FetchContinuousRangeAsync(session, start, 64);
+                Assert.Equal(start, range.SampleStart);
+                Assert.Equal(64, range.Samples.Length);
+                Assert.Equal(RawIntegrityStatus.Valid, range.Integrity);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(cache)) Directory.Delete(cache, true);
+        }
+    }
+
+    [Fact]
     public async Task ImportsRealS3SessionAndFetchesOnlySelectedEventRawWhenConfigured()
     {
         var address = Environment.GetEnvironmentVariable("KNX_ANALYZER_LIVE_URL");

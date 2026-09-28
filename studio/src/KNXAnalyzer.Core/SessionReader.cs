@@ -21,6 +21,10 @@ public sealed class Session
     public uint DetectionThreshold { get; set; }
     public uint PreTriggerSamples { get; set; }
     public uint PostTriggerSamples { get; set; }
+    public string AcquisitionMode { get; set; } = "EVENT";
+    public bool IsContinuousRaw => AcquisitionMode == "CONTINUOUS_RAW";
+    public ulong? RawSampleStart => RawChunks.Count == 0 ? null : RawChunks.Min(x => x.SampleStart);
+    public ulong? RawSampleEnd => RawChunks.Count == 0 ? null : RawChunks.Max(x => x.SampleEnd);
     public List<EventRawChunk> RawChunks { get; } = [];
     public NetworkSessionContext? Network { get; set; }
     public List<Tp1Candidate> Candidates { get; } = [];

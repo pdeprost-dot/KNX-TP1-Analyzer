@@ -4,6 +4,7 @@
 #include <esp_crc.h>
 #include <esp_heap_caps.h>
 #include <esp_adc/adc_continuous.h>
+#include <mbedtls/sha256.h>
 #include <soc/soc_caps.h>
 #include <atomic>
 #include <errno.h>
@@ -13,7 +14,7 @@
 #include "auto_calibration.h"
 
 #define S3_NETWORK_ENABLED 1
-constexpr const char *FIRMWARE_VERSION = "KNXAnalyzerField-s3-analog-v0.6.0-session-api-v1";
+constexpr const char *FIRMWARE_VERSION = "KNXAnalyzerField-s3-analog-v0.7.0-continuous-raw-v1";
 
 // Headless KNX Analyzer Field bring-up. Real ADC; no KNX bus, display, touch,
 // camera, microphone, or future UART is initialized in this milestone.
@@ -38,7 +39,7 @@ constexpr uint32_t INDEX_STRIDE_CHUNKS = 256;
 
 enum class State : uint8_t { IDLE, RUNNING, STOPPING, CLOSED, FAILED };
 enum class StorageState : uint8_t { HEALTHY, OUTAGE, RECOVERING };
-enum class CaptureMode : uint8_t { EVENT, CONTINUOUS };
+enum class CaptureMode : uint8_t { EVENT, CONTINUOUS_RAW };
 enum class TimeSource : uint8_t { NONE, BROWSER, NTP };
 enum class ChunkState : uint8_t { FREE, FILLING, HISTORY, PENDING, WRITING };
 enum class AdcMode : uint8_t { OFF, OBSERVING, CAPTURING };
@@ -86,7 +87,9 @@ uint64_t longestGapUs = 0, cumulativeStorageOutageUs = 0;
 uint64_t nextRecoveryDueUs = 0;
 uint32_t currentRecoveryBackoffMs = 0, maxRecoveryBackoffMs = 0;
 uint64_t firstRawFailureUs = 0;
-uint64_t startedUs = 0, closedUs = 0, segmentBytes = 0, segmentSampleStart = 0;
+uint64_t startedUs = 0, closedUs = 0, adcCaptureStartedUs = 0, adcCaptureEndedUs = 0;
+std::atomic<uint64_t> adcLastProducedUs{0};
+uint64_t segmentBytes = 0, segmentSampleStart = 0, lastRawDebugUs = 0;
 TimeSource pendingTimeSource = TimeSource::NONE, activeTimeSource = TimeSource::NONE;
 uint64_t pendingUnixMs = 0, pendingReferenceMonoUs = 0, startUnixMs = 0;
 int32_t pendingTimezoneOffsetMin = 0, activeTimezoneOffsetMin = 0;
@@ -114,6 +117,8 @@ uint64_t firstPoolExhaustionUs = 0, firstPoolExhaustionSample = 0;
 uint32_t firstPoolFree = 0, firstPoolFilling = 0, firstPoolHistory = 0, firstPoolPending = 0, firstPoolWriting = 0;
 std::atomic<uint32_t> chunkLifecycleErrors{0}, releasedSelectedChunks{0};
 CaptureMode captureMode = CaptureMode::EVENT;
+CaptureMode pendingCaptureMode = CaptureMode::EVENT;
+String pendingSiteLabel, pendingBusLabel, pendingMeasurementPoint, pendingOperatorNote;
 DetectionConfig detection{4095, 8333, 8333, true, "UNCALIBRATED_SAFE"};
 D44ActivityDetector detector;
 D44ActivityDetector calibrationDetector;
@@ -125,11 +130,41 @@ uint32_t eventTriggerD44 = 0, eventMaxD44 = 0;
 uint16_t eventMin = UINT16_MAX, eventMax = 0;
 uint16_t adcMin = UINT16_MAX, adcMax = 0;
 uint64_t adcSum = 0;
+uint64_t adcClipLow = 0, adcClipHigh = 0;
 uint32_t d44Max = 0;
 uint64_t requestedDurationUs = 60000000ULL;
 bool preWifiHeapOk = false;
 uint32_t preWifiInternalFree = 0, preWifiInternalMin = 0, preWifiInternalLargest = 0;
 uint32_t preWifiDmaFree = 0, preWifiDmaMin = 0, preWifiDmaLargest = 0;
+uint32_t captureInternalMin = UINT32_MAX, captureDmaMin = UINT32_MAX;
+uint32_t captureInternalLargestMin = UINT32_MAX, captureDmaLargestMin = UINT32_MAX;
+mbedtls_sha256_context rawShaContext;
+bool rawShaActive = false;
+uint8_t rawSha256[32]{};
+
+const char *captureModeName(CaptureMode mode) {
+  return mode == CaptureMode::CONTINUOUS_RAW ? "CONTINUOUS_RAW" : "EVENT";
+}
+
+String jsonStringOrNull(const String &value) {
+  if (value.isEmpty()) return "null";
+  String out = "\"";
+  for (char c : value) {
+    if (c == '\\' || c == '"') { out += '\\'; out += c; }
+    else if (uint8_t(c) >= 0x20) out += c;
+  }
+  out += '"'; return out;
+}
+
+void updateCaptureMemoryMinima() {
+  const uint32_t internalFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  const uint32_t dmaFree = heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+  const uint32_t internalLargest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  const uint32_t dmaLargest = heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+  captureInternalMin = min(captureInternalMin, internalFree); captureDmaMin = min(captureDmaMin, dmaFree);
+  captureInternalLargestMin = min(captureInternalLargestMin, internalLargest);
+  captureDmaLargestMin = min(captureDmaLargestMin, dmaLargest);
+}
 
 void updateQueueStats() {
   uint32_t freeDepth = 0;
@@ -137,7 +172,8 @@ void updateQueueStats() {
   for (Chunk *chunk : chunks)
     if (chunk && (chunk->state == ChunkState::FREE ||
         (chunk->state == ChunkState::HISTORY && !chunk->selected &&
-         chunk->sampleStart + chunk->count + detection.preSamples <= now))) ++freeDepth;
+         (captureMode == CaptureMode::CONTINUOUS_RAW ||
+         chunk->sampleStart + chunk->count + detection.preSamples <= now)))) ++freeDepth;
   const uint32_t readyDepth = readyQ ? uxQueueMessagesWaiting(readyQ) : 0;
   const uint32_t pending = readyDepth + (writerActive.load() ? 1U : 0U);
   if (freeDepth < freeMin) freeMin = freeDepth;
@@ -584,6 +620,7 @@ bool writeChunk(Chunk &chunk) {
     else { ++retryFailures; lostSamples += chunk.count - written / 2; failSd(!rawFile ? "reopen" : "raw_retry"); return false; }
   }
   chunk.crc = esp_crc32_le(0, reinterpret_cast<uint8_t *>(chunk.data), chunkBytes);
+  if (rawShaActive) mbedtls_sha256_update(&rawShaContext, reinterpret_cast<uint8_t *>(chunk.data), chunkBytes);
   sessionCrc = esp_crc32_le(sessionCrc, reinterpret_cast<uint8_t *>(chunk.data), chunkBytes);
   segmentCrc = esp_crc32_le(segmentCrc, reinterpret_cast<uint8_t *>(chunk.data), chunkBytes);
   if ((storedChunks % INDEX_STRIDE_CHUNKS) == 0) {
@@ -651,7 +688,8 @@ Chunk *acquireChunk(uint64_t sampleStart) {
   for (Chunk *chunk : chunks) {
     if (chunk->state == ChunkState::FREE) { candidate = chunk; break; }
     if (chunk->state == ChunkState::HISTORY && !chunk->selected &&
-        chunk->sampleStart + chunk->count + detection.preSamples <= sampleStart) {
+        (captureMode == CaptureMode::CONTINUOUS_RAW ||
+         chunk->sampleStart + chunk->count + detection.preSamples <= sampleStart)) {
       if (!candidate || chunk->sampleStart < candidate->sampleStart) candidate = chunk;
     }
   }
@@ -660,7 +698,7 @@ Chunk *acquireChunk(uint64_t sampleStart) {
   candidate->seq = producedChunks.load() + 1;
   candidate->sampleStart = sampleStart;
   candidate->segmentOffset = candidate->crc = candidate->count = 0;
-  candidate->selected = captureMode == CaptureMode::CONTINUOUS;
+  candidate->selected = captureMode == CaptureMode::CONTINUOUS_RAW;
   candidate->stored = candidate->accounted = false;
   candidate->state = ChunkState::FILLING;
   return candidate;
@@ -711,6 +749,7 @@ void finalizeCurrentChunk() {
   currentChunk->state = ChunkState::HISTORY;
   ++producedChunks;
   if (currentChunk->selected) enqueueSelected(currentChunk);
+  updateCaptureMemoryMinima();
   currentChunk = nullptr;
 }
 
@@ -753,7 +792,9 @@ void producerTask(void *) {
       currentChunk->data[currentChunk->count++] = value;
       if (eventActive) currentChunk->selected = true;
       adcSum += value; if (value < adcMin) adcMin = value; if (value > adcMax) adcMax = value;
-      const uint32_t d44 = detector.push(value); if (d44 > d44Max) d44Max = d44;
+      if (value <= 16) ++adcClipLow; if (value >= 4079) ++adcClipHigh;
+      const uint32_t d44 = captureMode == CaptureMode::EVENT ? detector.push(value) : 0;
+      if (d44 > d44Max) d44Max = d44;
       if (captureMode == CaptureMode::EVENT && detection.enabled && d44 > detection.d44Threshold) {
         ++excursionCount;
         if (!eventActive) {
@@ -772,6 +813,7 @@ void producerTask(void *) {
       if (currentChunk->count == CHUNK_SAMPLES) finalizeCurrentChunk();
       if (stopRequested.load()) break;
     }
+    if (mode == AdcMode::CAPTURING && bytes) adcLastProducedUs = esp_timer_get_time();
   }
 }
 
@@ -834,9 +876,12 @@ void resetCounters() {
   firstPoolFree = firstPoolFilling = firstPoolHistory = firstPoolPending = firstPoolWriting = 0;
   chunkLifecycleErrors = releasedSelectedChunks = 0;
   adcMin = UINT16_MAX; adcMax = d44Max = 0; adcSum = 0;
+  adcClipLow = adcClipHigh = 0;
   eventActive = false; eventStart = eventTrigger = eventEnd = eventCount = excursionCount = 0;
   eventTriggerD44 = eventMaxD44 = 0; eventMin = UINT16_MAX; eventMax = 0;
   detector.reset(); currentChunk = nullptr;
+  captureInternalMin = captureDmaMin = captureInternalLargestMin = captureDmaLargestMin = UINT32_MAX;
+  memset(rawSha256, 0, sizeof(rawSha256)); rawShaActive = false; lastRawDebugUs = 0;
   while (readyQ && uxQueueMessagesWaiting(readyQ)) { Chunk *discard = nullptr; xQueueReceive(readyQ, &discard, 0); }
   for (Chunk *chunk : chunks) if (chunk) { memset(chunk, 0, sizeof(Chunk)); chunk->state = ChunkState::FREE; }
 }
@@ -879,9 +924,17 @@ void activateTimeReference(uint64_t monotonicOriginUs) {
 
 bool startRun() {
   if (!sdReady || (state.load() != State::IDLE && state.load() != State::CLOSED)) return false;
-  if (!calibration.valid()) return false;
-  detection.d44Threshold = calibration.validatedThreshold();
-  detection.profile = "AUTO_D44_V1";
+  if (captureMode == CaptureMode::EVENT && !calibration.valid()) return false;
+  detection.d44Threshold = calibration.valid() ? calibration.validatedThreshold() : 0;
+  detection.profile = calibration.valid() ? "AUTO_D44_V1" : "NONE";
+  if (captureMode == CaptureMode::CONTINUOUS_RAW) {
+    const uint64_t estimated = (requestedDurationUs / 1000000ULL + 1ULL) * SAMPLE_RATE * sizeof(uint16_t);
+    const uint64_t freeBytes = SD.totalBytes() > SD.usedBytes() ? SD.totalBytes() - SD.usedBytes() : 0;
+    if (freeBytes < estimated + 16ULL * 1024ULL * 1024ULL) {
+      Serial.printf("{\"type\":\"START_REJECTED\",\"reason\":\"SD_SPACE\",\"estimated_raw_bytes\":\"%llu\",\"free_bytes\":\"%llu\"}\n", estimated, freeBytes);
+      return false;
+    }
+  }
   resetCounters();
   char name[32]; snprintf(name, sizeof(name), "/KNX-%08lX", (unsigned long)esp_random());
   sessionDir = name;
@@ -900,7 +953,12 @@ bool startRun() {
   }
   File session = SD.open(sessionDir + "/session-start.json", FILE_WRITE);
   if (!session) { state = State::FAILED; return false; }
-  startedUs = esp_timer_get_time(); closedUs = 0;
+  startedUs = esp_timer_get_time(); closedUs = adcCaptureStartedUs = adcCaptureEndedUs = 0;
+  adcLastProducedUs = 0;
+  mbedtls_sha256_init(&rawShaContext);
+  mbedtls_sha256_starts(&rawShaContext, 0);
+  rawShaActive = true;
+  updateCaptureMemoryMinima();
   activateTimeReference(startedUs);
   String absoluteFields;
   if (absoluteTimeValid) {
@@ -909,10 +967,14 @@ bool startRun() {
   } else {
     absoluteFields = "\"start_unix_ms\":null,\"start_utc\":null,\"browser_timezone_offset_min\":null";
   }
-  session.printf("{\"schema_version\":\"knx-long-session-1.0\",\"firmware\":\"KNXAnalyzerField-s3-analog-v0\",\"sample_rate_hz\":%u,"
+  session.printf("{\"schema_version\":\"knx-long-session-1.1\",\"session_id\":\"%s\",\"firmware\":\"%s\",\"analyzer_id\":\"S3-%08llX\","
+                 "\"board_profile\":\"XIAO_ESP32S3\",\"frontend_profile\":\"KNX_DIVIDER_390K_27K\","
+                 "\"acquisition_mode\":\"%s\",\"sample_rate_hz\":%u,\"sample_rate_configured_hz\":%u,"
                  "\"sample_type\":\"uint16_le\",\"chunk_samples\":%u,\"chunk_bytes\":%u,"
                  "\"capture_mode\":\"%s\",\"trigger_profile\":\"%s\",\"d44_threshold\":%u,"
-                 "\"pre_samples\":%u,\"post_samples\":%u,\"adc_gpio\":1,\"calibration_state\":\"CALIBRATED\","
+                 "\"pre_samples\":%u,\"post_samples\":%u,\"adc_gpio\":1,\"adc_unit\":1,\"adc_channel\":0,"
+                 "\"adc_resolution_bits\":12,\"adc_attenuation\":\"12dB\",\"endianness\":\"little\","
+                 "\"calibration_state\":\"%s\","
                  "\"calibration_schema\":\"knx-calibration-1.0\",\"calibration_algorithm\":\"d44-autocal-v1\","
                  "\"calibration_id_crc32\":\"%08X\",\"calibration_confidence\":%u,\"calibration_confidence_category\":\"%s\","
                  "\"calibration_noise_upper\":%u,\"calibration_activity_p10\":%u,\"calibration_quiet_windows\":%u,"
@@ -922,16 +984,20 @@ bool startRun() {
                  "\"calibration_adc_profile\":\"ADC1_CH0_12DB_12BIT_83333HZ\","
                  "\"calibration_adc_zero\":\"%llu\",\"calibration_adc_low16\":\"%llu\","
                  "\"calibration_adc_high4079\":\"%llu\",\"calibration_adc_max4095\":\"%llu\","
+                 "\"site_label\":%s,\"bus_label\":%s,\"measurement_point\":%s,\"operator_note\":%s,"
                  "\"calibrated_unix_ms\":null,\"time_schema_version\":\"1.0\","
                  "\"time_source\":\"%s\",\"absolute_time_valid\":%s,"
                  "%s,\"monotonic_origin_us\":\"%llu\",\"camera\":false,\"microphone\":false}\n",
-                 SAMPLE_RATE, CHUNK_SAMPLES, CHUNK_BYTES,
-                 captureMode == CaptureMode::CONTINUOUS ? "CONTINUOUS_DIAGNOSTIC" : "EVENT",
+                 sessionDir.substring(1).c_str(), FIRMWARE_VERSION, ESP.getEfuseMac(), captureModeName(captureMode),
+                 SAMPLE_RATE, SAMPLE_RATE, CHUNK_SAMPLES, CHUNK_BYTES, captureModeName(captureMode),
                  detection.profile, detection.d44Threshold, detection.preSamples, detection.postSamples,
+                 autocal::stateName(calibration.state()),
                  calibration.identityCrc(), calibration.confidence(), calibration.confidenceName(),
                  calibration.noiseUpper(), calibration.activityP10(), calibration.quietWindows(),
                  calibration.activeWindows(), calibration.bursts(), calibration.adcZero(), calibration.adcLow16(),
-                 calibration.adcHigh4079(), calibration.adcMax4095(),
+                 calibration.adcHigh4079(), calibration.adcMax4095(), jsonStringOrNull(pendingSiteLabel).c_str(),
+                 jsonStringOrNull(pendingBusLabel).c_str(), jsonStringOrNull(pendingMeasurementPoint).c_str(),
+                 jsonStringOrNull(pendingOperatorNote).c_str(),
                  timeSourceName(activeTimeSource), absoluteTimeValid ? "true" : "false",
                  absoluteFields.c_str(), startedUs);
   session.flush(); session.close();
@@ -940,10 +1006,11 @@ bool startRun() {
   if (!adcHandle || adc_continuous_start(adcHandle) != ESP_OK) {
     adcMode = AdcMode::OFF; state = State::FAILED; return false;
   }
+  adcCaptureStartedUs = esp_timer_get_time();
   state = State::RUNNING;
   Serial.printf("{\"type\":\"START\",\"dir\":\"%s\",\"source\":\"ADC_GPIO1\",\"mode\":\"%s\","
                 "\"duration_us\":\"%llu\",\"sample_rate_target_hz\":%u}\n", sessionDir.c_str(),
-                captureMode == CaptureMode::CONTINUOUS ? "CONTINUOUS_DIAGNOSTIC" : "EVENT",
+                captureModeName(captureMode),
                 requestedDurationUs, SAMPLE_RATE);
   return true;
 }
@@ -957,6 +1024,8 @@ void finalizeRun() {
   if (adcHandle) adc_continuous_stop(adcHandle);
   const uint32_t drainDeadline = millis() + 3000;
   while (!producerDrained.load() && int32_t(drainDeadline - millis()) > 0) delay(1);
+  adcCaptureEndedUs = adcLastProducedUs.load();
+  if (adcCaptureEndedUs < adcCaptureStartedUs) adcCaptureEndedUs = adcCaptureStartedUs;
   if (eventActive) closeEvent(producedSamples.load(), true);
   finalizeCurrentChunk();
   for (Chunk *chunk : chunks) if (chunk->state == ChunkState::HISTORY && !chunk->selected && !chunk->accounted) {
@@ -970,6 +1039,13 @@ void finalizeRun() {
   eventsFile.flush(); eventsFile.close(); gapsFile.flush(); gapsFile.close();
   transitionsFile.flush(); transitionsFile.close();
   closedUs = esp_timer_get_time();
+  if (rawShaActive) {
+    mbedtls_sha256_finish(&rawShaContext, rawSha256);
+    mbedtls_sha256_free(&rawShaContext); rawShaActive = false;
+  }
+  char rawShaHex[65];
+  for (uint8_t i = 0; i < 32; ++i) snprintf(rawShaHex + i * 2, 3, "%02X", rawSha256[i]);
+  rawShaHex[64] = 0;
   invariantOk = producedSamples.load() == storedSamples.load() + ignoredSamples.load() + lostSamples.load();
   const bool r3FaultExpected = faultR3OnceChunk != 0;
   const bool outageFaultExpected = faultOutageStartChunk != 0;
@@ -1002,10 +1078,15 @@ void finalizeRun() {
   else completionStatus = "COMPLETE";
   File result = SD.open(sessionDir + "/test-result.json", FILE_WRITE);
   if (result) {
-    result.printf("{\"pass\":%s,\"schema_version\":\"knx-long-session-1.0\",\"source\":\"ADC_GPIO1\","
-                  "\"duration_us\":\"%llu\",\"samples\":\"%llu\",\"chunks\":\"%llu\","
+    const uint64_t sessionDurationUs = closedUs - startedUs;
+    const uint64_t adcCaptureDurationUs = adcCaptureEndedUs - adcCaptureStartedUs;
+    result.printf("{\"pass\":%s,\"schema_version\":\"knx-long-session-1.1\",\"acquisition_mode\":\"%s\",\"source\":\"ADC_GPIO1\","
+                  "\"duration_us\":\"%llu\",\"session_duration_us\":\"%llu\",\"adc_capture_duration_us\":\"%llu\","
+                  "\"samples\":\"%llu\",\"chunks\":\"%llu\","
+                  "\"sample_rate_measured_hz\":%.6f,\"raw_sha256\":\"%s\","
                   "\"raw_bytes\":\"%llu\",\"stored_samples\":\"%llu\",\"ignored_samples\":\"%llu\","
                   "\"events_total\":\"%llu\",\"excursions\":\"%llu\",\"adc_min\":%u,\"adc_max\":%u,"
+                  "\"clipping_low\":\"%llu\",\"clipping_high\":\"%llu\","
                   "\"adc_mean\":%.3f,\"d44_max\":%u,\"dma_overflow\":%u,\"adc_read_errors\":%u,"
                   "\"first_dma_overflow_us\":\"%llu\",\"first_dma_overflow_sample\":\"%llu\","
                   "\"first_pool_exhaustion_us\":\"%llu\",\"first_pool_exhaustion_sample\":\"%llu\","
@@ -1027,10 +1108,14 @@ void finalizeRun() {
                   "\"current_recovery_backoff_ms\":%u,\"max_recovery_backoff_ms\":%u,"
                   "\"lost_chunks_total\":%u,\"longest_gap_us\":\"%llu\","
                   "\"cumulative_storage_outage_us\":\"%llu\",\"fault_outage_injected\":%u,"
-                  "\"fault_recovery_injected\":%u}\n",
-                  finalPass ? "true" : "false", closedUs - startedUs, producedSamples.load(), producedChunks.load(),
+                  "\"fault_recovery_injected\":%u,\"capture_heap_internal_min\":%u,\"capture_heap_dma_min\":%u,"
+                  "\"capture_largest_internal_min\":%u,\"capture_largest_dma_min\":%u}\n",
+                  finalPass ? "true" : "false", captureModeName(captureMode), sessionDurationUs, sessionDurationUs,
+                  adcCaptureDurationUs, producedSamples.load(), producedChunks.load(),
+                  adcCaptureDurationUs ? double(storedSamples.load()) * 1000000.0 / double(adcCaptureDurationUs) : 0.0, rawShaHex,
                   rawBytes.load(), storedSamples.load(), ignoredSamples.load(), eventCount, excursionCount,
                   adcMin == UINT16_MAX ? 0 : adcMin, adcMax,
+                  adcClipLow, adcClipHigh,
                   producedSamples.load() ? double(adcSum) / producedSamples.load() : 0.0, d44Max,
                   dmaOverflows.load(), adcReadErrors.load(), firstDmaOverflowUs, firstDmaOverflowSample,
                   firstPoolExhaustionUs, firstPoolExhaustionSample, chunkLifecycleErrors.load(), releasedSelectedChunks.load(),
@@ -1048,11 +1133,37 @@ void finalizeRun() {
                   storageStateName(storageState.load()), storageRecoveryAttempts.load(), storageRecoveryFailures.load(),
                   storageRecoverySuccesses.load(), syntheticRecoveryFailures.load(), currentRecoveryBackoffMs,
                   maxRecoveryBackoffMs, lostChunksTotal.load(), longestGapUs, cumulativeStorageOutageUs,
-                  faultOutageConsumed ? 1U : 0U, faultRecoveryConsumed ? 1U : 0U);
+                  faultOutageConsumed ? 1U : 0U, faultRecoveryConsumed ? 1U : 0U,
+                  captureInternalMin, captureDmaMin, captureInternalLargestMin, captureDmaLargestMin);
     result.flush(); result.close();
   } else {
     lastSdErrorSource = "finalization"; ++sdErrors; finalPass = false;
     Serial.printf("{\"type\":\"SD_ERROR\",\"source\":\"finalization\",\"count\":%u}\n", sdErrors.load());
+  }
+  File sessionEnd = SD.open(sessionDir + "/session-end.json", FILE_WRITE);
+  if (sessionEnd) {
+    sessionEnd.printf("{\"schema_version\":\"knx-long-session-1.1\",\"session_id\":\"%s\",\"acquisition_mode\":\"%s\","
+      "\"lifecycle\":\"%s\",\"completion_status\":\"%s\",\"end_monotonic_us\":\"%llu\","
+      "\"duration_us\":\"%llu\",\"session_duration_us\":\"%llu\",\"adc_capture_duration_us\":\"%llu\","
+      "\"total_samples\":\"%llu\",\"total_raw_bytes\":\"%llu\","
+      "\"chunk_count\":\"%llu\",\"gap_count\":%u,\"lost_samples\":\"%llu\",\"raw_sha256\":\"%s\"}\n",
+      sessionDir.substring(1).c_str(), captureModeName(captureMode), finalPass ? "CLOSED" : "FAILED", completionStatus, closedUs,
+      closedUs - startedUs, closedUs - startedUs, adcCaptureEndedUs - adcCaptureStartedUs,
+      producedSamples.load(), rawBytes.load(), storedChunks, gapCount.load(), lostSamples.load(), rawShaHex);
+    sessionEnd.close();
+  }
+  File manifest = SD.open(sessionDir + "/manifest.json", FILE_WRITE);
+  if (manifest) {
+    manifest.printf("{\"schema_version\":\"knx-continuous-raw-manifest-1.0\",\"session_id\":\"%s\","
+      "\"acquisition_mode\":\"%s\",\"sample_format\":\"uint16_le\",\"sample_rate_configured_hz\":%u,"
+      "\"session_duration_us\":\"%llu\",\"adc_capture_duration_us\":\"%llu\","
+      "\"total_samples\":\"%llu\",\"total_raw_bytes\":\"%llu\",\"chunk_count\":\"%llu\","
+      "\"chunk_crc\":\"CRC32_IEEE\",\"logical_raw_sha256\":\"%s\",\"gap_count\":%u,"
+      "\"continuity_complete\":%s}\n", sessionDir.substring(1).c_str(), captureModeName(captureMode), SAMPLE_RATE,
+      closedUs - startedUs, adcCaptureEndedUs - adcCaptureStartedUs,
+      producedSamples.load(), rawBytes.load(), storedChunks, rawShaHex, gapCount.load(),
+      (gapCount.load() == 0 && lostSamples.load() == 0 && invariantOk) ? "true" : "false");
+    manifest.close();
   }
   state = finalPass ? State::CLOSED : State::FAILED;
   if (state.load() == State::CLOSED) startIdleObservation();
@@ -1290,16 +1401,16 @@ void handleCommand(String command) {
       faultRecoveryStartChunk = 0; faultRecoveryFailuresRequested = 0; faultRecoveryConsumed = false;
       Serial.println("OK FAULT OFF");
     }
-  } else if (command == "MODE EVENT" || command == "MODE CONTINUOUS") {
+  } else if (command == "MODE EVENT" || command == "MODE CONTINUOUS" || command == "MODE CONTINUOUS_RAW") {
     if (state.load() == State::RUNNING || state.load() == State::STOPPING) Serial.println("ERROR MODE ACQUISITION_ACTIVE");
-    else { captureMode = command.endsWith("CONTINUOUS") ? CaptureMode::CONTINUOUS : CaptureMode::EVENT;
-      Serial.printf("OK MODE %s\n", captureMode == CaptureMode::CONTINUOUS ? "CONTINUOUS" : "EVENT"); }
+    else { captureMode = command == "MODE EVENT" ? CaptureMode::EVENT : CaptureMode::CONTINUOUS_RAW;
+      pendingCaptureMode = captureMode; Serial.printf("OK MODE %s\n", captureModeName(captureMode)); }
   } else if (command.startsWith("THRESHOLD ")) {
     if (state.load() == State::RUNNING || state.load() == State::STOPPING) Serial.println("ERROR THRESHOLD ACQUISITION_ACTIVE");
     else { detection.d44Threshold = strtoul(command.substring(10).c_str(), nullptr, 10);
       Serial.printf("OK THRESHOLD %u\n", detection.d44Threshold); }
   } else if (command.startsWith("START")) {
-    if (!calibration.valid()) {
+    if (captureMode == CaptureMode::EVENT && !calibration.valid()) {
       Serial.printf("ERROR START CALIBRATION_REQUIRED %s %s\n",
                     autocal::stateName(calibration.state()), calibration.reason());
       return;
@@ -1396,6 +1507,16 @@ void loop() {
 #if S3_NETWORK_ENABLED
   s3net::tick();
 #endif
+  if (state.load() == State::RUNNING && captureMode == CaptureMode::CONTINUOUS_RAW) {
+    const uint64_t elapsedUs = esp_timer_get_time() - startedUs;
+    if (elapsedUs >= lastRawDebugUs + 10000000ULL) {
+      lastRawDebugUs = elapsedUs;
+      Serial.printf("RAW t=%llus samples=%llu stored=%llu bytes=%llu free=%u ready=%u loss=%llu gaps=%u dma=%u adc=%u sd=%u\n",
+                    elapsedUs / 1000000ULL, producedSamples.load(), storedSamples.load(), rawBytes.load(),
+                    freeMin, readyQ ? unsigned(uxQueueMessagesWaiting(readyQ)) : 0U,
+                    lostSamples.load(), gapCount.load(), dmaOverflows.load(), adcReadErrors.load(), sdErrors.load());
+    }
+  }
   if (state.load() == State::RUNNING && esp_timer_get_time() - startedUs >= requestedDurationUs) finalizeRun();
   static String command;
   while (Serial.available()) {

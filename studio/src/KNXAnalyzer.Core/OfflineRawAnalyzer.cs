@@ -3,7 +3,8 @@ namespace KNXAnalyzer.Core;
 public enum OfflineAnalogClassification
 {
     NO_SIGNAL, ACTIVITY_DETECTED, TP1_PULSES_DETECTED, TP1_CANDIDATE,
-    TP1_VALID_FRAME, TP1_INVALID_PARITY, TP1_INVALID_CHECKSUM, TP1_INVALID_TIMING, UNDECODED_ACTIVITY
+    TP1_VALID_FRAME, TP1_INVALID_PARITY, TP1_INVALID_CHECKSUM, TP1_INVALID_TIMING,
+    TP1_INCOMPLETE, ANALOG_UNDECODED, UNDECODED_ACTIVITY
 }
 
 public sealed record AnalogSampleStream(uint SampleRateHz, uint TriggerIndex, IReadOnlyList<ushort> Samples);
@@ -14,7 +15,9 @@ public sealed record OfflineTp1Candidate(
     int StartSample, int EndSample, double StartMilliseconds, string Polarity,
     string RawHex, OfflineAnalogClassification Classification, int ParityErrors,
     int TimingErrors, bool ChecksumValid, double TimingRmsMicroseconds, double TimingMaxErrorMicroseconds,
-    KnxTelegram? Telegram, IReadOnlyList<string> Reasons);
+    KnxTelegram? Telegram, IReadOnlyList<string> Reasons,
+    Tp1RecordClassification RecordClassification = Tp1RecordClassification.ANALOG_UNDECODED,
+    Tp1KnownControl KnownControl = Tp1KnownControl.None);
 
 public sealed class AnalogAnalysis
 {
@@ -38,7 +41,8 @@ public sealed class AnalogAnalysis
     public IReadOnlyList<AnalogExcursion> PulseCandidates { get; init; } = [];
     public IReadOnlyList<double> PulseIntervalsMicroseconds { get; init; } = [];
     public IReadOnlyList<OfflineTp1Candidate> Tp1Candidates { get; init; } = [];
-    public int ValidFrameCount => Tp1Candidates.Count(x => x.Classification == OfflineAnalogClassification.TP1_VALID_FRAME);
+    public Tp1DecodeResult? DecodeResult { get; init; }
+    public int ValidFrameCount => DecodeResult?.ValidRecordCount ?? Tp1Candidates.Count(x => x.Classification == OfflineAnalogClassification.TP1_VALID_FRAME);
     public int ParityErrorCount => Tp1Candidates.Count(x => x.Classification == OfflineAnalogClassification.TP1_INVALID_PARITY);
     public int ChecksumErrorCount => Tp1Candidates.Count(x => x.Classification == OfflineAnalogClassification.TP1_INVALID_CHECKSUM);
     public int TimingErrorCount => Tp1Candidates.Count(x => x.Classification == OfflineAnalogClassification.TP1_INVALID_TIMING);
@@ -46,8 +50,6 @@ public sealed class AnalogAnalysis
 
 public static class OfflineRawAnalyzer
 {
-    private const double Tp1BitRate = 9600.0;
-
     public static AnalogAnalysis Analyze(RawCapture capture, Tp1AnalogDecodeProfile? profile = null) =>
         Analyze(new AnalogSampleStream(capture.SampleRateHz, capture.TriggerIndex, capture.Samples), profile);
 
@@ -69,7 +71,9 @@ public static class OfflineRawAnalyzer
         var pulseCandidates = excursions.Where(x => x.WidthMicroseconds is >= 15 and <= 60).ToArray();
         var pulseIntervals = pulseCandidates.OrderBy(x => x.StartSample).Zip(pulseCandidates.OrderBy(x => x.StartSample).Skip(1),
             (a, b) => 1_000_000.0 * (b.StartSample - a.StartSample) / stream.SampleRateHz).ToArray();
-        var reconstructed = Decode(stream, DetectSchmittPulses(values, profile, stream.SampleRateHz));
+        var decoded = Tp1DeterministicDecoder.Decode(stream,
+            Tp1AnalogPulseExtractor.Extract(stream, profile), profile);
+        var reconstructed = ToOfflineCandidates(stream, decoded);
         var activity = peakToPeak > Math.Max(20, 12 * noiseRms);
         var classification = Classify(activity, pulseCandidates.Length, reconstructed);
         return new AnalogAnalysis {
@@ -79,7 +83,8 @@ public static class OfflineRawAnalyzer
             StandardDeviation = Math.Sqrt(variance), Baseline = baseline, NoiseRms = noiseRms,
             DetectionThreshold = threshold, EdgeCount = excursions.Count * 2,
             Histogram = Histogram(values, minimum, maximum), Excursions = excursions,
-            PulseCandidates = pulseCandidates, PulseIntervalsMicroseconds = pulseIntervals, Tp1Candidates = reconstructed
+            PulseCandidates = pulseCandidates, PulseIntervalsMicroseconds = pulseIntervals,
+            Tp1Candidates = reconstructed, DecodeResult = decoded
         };
     }
 
@@ -89,6 +94,8 @@ public static class OfflineRawAnalyzer
         if (candidates.Any(x => x.Classification == OfflineAnalogClassification.TP1_INVALID_CHECKSUM)) return OfflineAnalogClassification.TP1_INVALID_CHECKSUM;
         if (candidates.Any(x => x.Classification == OfflineAnalogClassification.TP1_INVALID_PARITY)) return OfflineAnalogClassification.TP1_INVALID_PARITY;
         if (candidates.Any(x => x.Classification == OfflineAnalogClassification.TP1_INVALID_TIMING)) return OfflineAnalogClassification.TP1_INVALID_TIMING;
+        if (candidates.Any(x => x.Classification == OfflineAnalogClassification.TP1_INCOMPLETE)) return OfflineAnalogClassification.TP1_INCOMPLETE;
+        if (candidates.Any(x => x.Classification == OfflineAnalogClassification.ANALOG_UNDECODED)) return OfflineAnalogClassification.ANALOG_UNDECODED;
         if (candidates.Count > 0) return OfflineAnalogClassification.TP1_CANDIDATE;
         if (pulses >= 3) return OfflineAnalogClassification.TP1_PULSES_DETECTED;
         if (activity) return OfflineAnalogClassification.UNDECODED_ACTIVITY;
@@ -129,121 +136,34 @@ public static class OfflineRawAnalyzer
         return result;
     }
 
-    private static IReadOnlyList<AnalogExcursion> DetectSchmittPulses(
-        IReadOnlyList<ushort> values, Tp1AnalogDecodeProfile profile, uint rate)
-    {
-        var result = new List<AnalogExcursion>();
-        var low = false;
-        var start = 0;
-        ushort minimum = ushort.MaxValue;
-        for (var i = 0; i < values.Count; i++) {
-            if (!low && values[i] < profile.LowThreshold) {
-                low = true; start = i; minimum = values[i];
-            } else if (low) {
-                minimum = Math.Min(minimum, values[i]);
-                if (values[i] >= profile.HighThreshold) {
-                    result.Add(new AnalogExcursion(start, i, "negative",
-                        profile.HighThreshold - minimum,
-                        rate == 0 ? 0 : 1_000_000.0 * (i - start) / rate));
-                    low = false;
-                }
-            }
-        }
-        if (low) result.Add(new AnalogExcursion(start, values.Count, "negative",
-            profile.HighThreshold - minimum,
-            rate == 0 ? 0 : 1_000_000.0 * (values.Count - start) / rate));
-        return result;
-    }
-    private static IReadOnlyList<OfflineTp1Candidate> Decode(AnalogSampleStream stream, IReadOnlyList<AnalogExcursion> rawPulses)
-    {
-        if (stream.SampleRateHz == 0) return [];
-        const int characterEndSamples = 96;
-        const int frameGapSamples = 160;
-        var bitSamples = stream.SampleRateHz / Tp1BitRate;
-        var result = new List<OfflineTp1Candidate>();
-        var bytes = new List<byte>();
-        var timingErrors = new List<double>();
-        var characterActive = false;
-        var characterStart = 0;
-        var previousCharacterStart = 0;
-        var pulseBits = 0;
-        var parityErrors = 0;
-        var timingErrorCount = 0;
-        AnalogExcursion? frameStart = null;
-
-        void FinishCharacter()
-        {
-            if (!characterActive) return;
-            characterActive = false;
-            byte value = 0;
-            var ones = 0;
-            for (var bit = 0; bit < 8; bit++) if ((pulseBits & (1 << (bit + 1))) == 0) {
-                value |= (byte)(1 << bit); ones++;
-            }
-            var parityOne = (pulseBits & (1 << 9)) == 0;
-            if (((ones + (parityOne ? 1 : 0)) & 1) != 0) parityErrors++;
-            if ((pulseBits & (1 << 10)) != 0) timingErrorCount++;
-            bytes.Add(value);
-        }
-
-        void QueueRecord()
-        {
-            if (frameStart is not null && bytes.Count >= 8)
-                AddCandidate(result, stream, frameStart, "negative", bytes, parityErrors, timingErrorCount, timingErrors, bitSamples);
-            bytes = []; timingErrors = []; parityErrors = 0; timingErrorCount = 0; frameStart = null;
-        }
-
-        foreach (var pulse in rawPulses.Where(x => x.Polarity == "negative").OrderBy(x => x.StartSample)) {
-            var sampleIndex = pulse.StartSample;
-            if (characterActive && sampleIndex - characterStart > characterEndSamples) FinishCharacter();
-            if (bytes.Count > 0 && !characterActive && sampleIndex - previousCharacterStart > frameGapSamples) QueueRecord();
-            if (!characterActive) {
-                if (bytes.Count > 0 && sampleIndex - previousCharacterStart > frameGapSamples) QueueRecord();
-                frameStart ??= pulse;
-                previousCharacterStart = characterStart = sampleIndex;
-                characterActive = true;
-                pulseBits = 1;
-                continue;
-            }
-            var delta = sampleIndex - characterStart;
-            var bit = (int)Math.Round(delta / bitSamples);
-            var errorSamples = Math.Abs(delta - bit * bitSamples);
-            if (bit > 10 || errorSamples > 3) timingErrorCount++;
-            else {
-                pulseBits |= 1 << bit;
-                timingErrors.Add(errorSamples);
-            }
-        }
-        FinishCharacter();
-        QueueRecord();
-        return result.OrderBy(x => x.StartSample).ToArray();
-    }
-    private static void AddCandidate(List<OfflineTp1Candidate> result, AnalogSampleStream stream,
-        AnalogExcursion start, string polarity, List<byte> bytes, int parityErrors, int timingErrorCount,
-        List<double> timingErrors, double bitSamples)
-    {
-        if (bytes.Count < 8) return;
-        byte xor = 0; foreach (var value in bytes) xor ^= value;
-        var checksum = xor == 0xFF;
-        var telegram = parityErrors == 0 && timingErrorCount == 0 && checksum ? KnxTelegramDecoder.Decode(bytes.ToArray()) : null;
-        var classification = telegram is not null ? OfflineAnalogClassification.TP1_VALID_FRAME :
-            parityErrors > 0 ? OfflineAnalogClassification.TP1_INVALID_PARITY :
-            timingErrorCount > 0 ? OfflineAnalogClassification.TP1_INVALID_TIMING :
-            !checksum ? OfflineAnalogClassification.TP1_INVALID_CHECKSUM : OfflineAnalogClassification.TP1_CANDIDATE;
-        var timingRmsUs = timingErrors.Count == 0 ? 0 : Math.Sqrt(timingErrors.Average(x => x * x)) * 1_000_000 / stream.SampleRateHz;
-        var timingMaxUs = timingErrors.Count == 0 ? 0 : timingErrors.Max() * 1_000_000 / stream.SampleRateHz;
-        var reasons = new List<string> {
-            "9600 bit/s timing hypothesis", "13 bit-times between character starts",
-            $"pulse polarity: {polarity}", $"decoded characters: {bytes.Count}",
-            $"pulse timing RMS error: {timingRmsUs:F2} us", $"pulse timing max error: {timingMaxUs:F2} us",
-            $"parity errors: {parityErrors}", $"timing errors: {timingErrorCount}", $"XOR checksum: {(checksum ? "valid" : "invalid")}"
-        };
-        var end = (int)Math.Ceiling(start.StartSample + bytes.Count * 13 * bitSamples);
-        result.Add(new OfflineTp1Candidate(start.StartSample, end,
-            1000.0 * (start.StartSample - stream.TriggerIndex) / stream.SampleRateHz,
-            polarity, Convert.ToHexString(bytes.ToArray()), classification, parityErrors, timingErrorCount, checksum,
-            timingRmsUs, timingMaxUs, telegram, reasons));
-    }
+    private static IReadOnlyList<OfflineTp1Candidate> ToOfflineCandidates(AnalogSampleStream stream, Tp1DecodeResult decoded) =>
+        decoded.Records.Select(record => {
+            var errors = record.Characters.SelectMany(character => character.Slots)
+                .Where(slot => slot.SourcePulse is not null && slot.TimingErrorMicroseconds is not null)
+                .Select(slot => Math.Abs(slot.TimingErrorMicroseconds!.Value)).ToArray();
+            var timingRms = errors.Length == 0 ? 0 : Math.Sqrt(errors.Average(value => value * value));
+            var timingMax = errors.Length == 0 ? 0 : errors.Max();
+            var classification = record.Classification switch {
+                Tp1RecordClassification.VALID_KNOWN or Tp1RecordClassification.VALID_UNKNOWN => OfflineAnalogClassification.TP1_VALID_FRAME,
+                Tp1RecordClassification.INVALID_PARITY => OfflineAnalogClassification.TP1_INVALID_PARITY,
+                Tp1RecordClassification.INVALID_TIMING => OfflineAnalogClassification.TP1_INVALID_TIMING,
+                Tp1RecordClassification.INVALID_CHECKSUM => OfflineAnalogClassification.TP1_INVALID_CHECKSUM,
+                Tp1RecordClassification.INCOMPLETE => OfflineAnalogClassification.TP1_INCOMPLETE,
+                _ => OfflineAnalogClassification.ANALOG_UNDECODED
+            };
+            var reasons = new[] {
+                "deterministic C6-derived state machine", $"record classification: {record.Classification}",
+                $"decoded characters: {record.Characters.Count}", $"parity errors: {record.ParityErrors}",
+                $"timing errors: {record.TimingErrors}",
+                $"XOR checksum: {(record.ChecksumValid is null ? "not applicable" : record.ChecksumValid.Value ? "valid" : "invalid")}",
+                $"known control: {record.KnownControl}"
+            };
+            return new OfflineTp1Candidate(record.StartSample, record.EndSample,
+                1000.0 * (record.StartSample - stream.TriggerIndex) / stream.SampleRateHz,
+                "negative", record.RawHex, classification, record.ParityErrors, record.TimingErrors,
+                record.ChecksumValid == true, timingRms, timingMax, record.Telegram, reasons,
+                record.Classification, record.KnownControl);
+        }).ToArray();
 
 
     public static Tp1ProfileComparison CompareProfiles(RawCapture capture)
