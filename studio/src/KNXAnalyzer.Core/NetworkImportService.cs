@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -114,50 +113,39 @@ public sealed class NetworkImportService : IDisposable
     public async Task<RawCapture> FetchEventAsync(Session session, uint eventId, IProgress<NetworkImportProgress>? progress = null, CancellationToken ct = default)
     {
         var context = session.Network ?? throw new InvalidOperationException("Session is not network-backed.");
-        var eventJson = File.ReadLines(Path.Combine(context.CacheDirectory, "events.jsonl")).Select(x => JsonDocument.Parse(x))
-            .FirstOrDefault(x => U64(x.RootElement, "event_id") == eventId)
+        var analog = session.AnalogEvents.SingleOrDefault(x => x.EventId == eventId)
             ?? throw new InvalidDataException($"Event {eventId} was not found.");
-        using (eventJson) {
-            var item = eventJson.RootElement; ulong eventStart = U64(item, "sample_start"); ulong eventEnd = U64(item, "sample_end"); ulong trigger = U64Either(item, "sample_trigger", "trigger_sample");
-            var chunks = File.ReadLines(Path.Combine(context.CacheDirectory, "chunks.jsonl")).Where(x => !string.IsNullOrWhiteSpace(x)).Select(ParseChunk)
-                .Where(x => x.SampleStart < eventEnd && x.SampleEnd > eventStart).OrderBy(x => x.SampleStart).ToArray();
-            var samples = new List<ushort>(checked((int)(eventEnd - eventStart))); ulong expected = eventStart; bool crcValid = true;
-            foreach (var chunk in chunks) {
-                var bytes = await GetChunkAsync(context, chunk, progress, ct); crcValid &= Crc32(bytes) == chunk.Crc32;
-                var from = Math.Max(eventStart, chunk.SampleStart); var to = Math.Min(eventEnd, chunk.SampleEnd);
-                if (from > expected) throw new InvalidDataException($"RAW gap before sample {from}."); from = Math.Max(from, expected);
-                for (var sample = from; sample < to; ++sample) samples.Add(BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(checked((int)((sample - chunk.SampleStart) * 2)), 2)));
-                expected = Math.Max(expected, to);
-            }
-            if (expected < eventEnd) throw new InvalidDataException($"RAW ends at sample {expected}, expected {eventEnd}.");
-            var array = samples.ToArray(); progress?.Report(new("verification", array.Length * 2, array.Length * 2));
-            return new RawCapture { EventId = eventId, SampleRateHz = EventRawV2Reader.SampleRateHz, TriggerIndex = checked((uint)(trigger - eventStart)), Samples = array,
-                Minimum = array.Length == 0 ? (ushort)0 : array.Min(), Maximum = array.Length == 0 ? (ushort)0 : array.Max(), Mean = array.Length == 0 ? 0 : array.Average(x => (double)x), CrcValid = crcValid };
-        }
+        var descriptor = analog.RawDescriptor ?? throw new InvalidDataException($"Event {eventId} has no RAW descriptor.");
+        var capture = await EventRawAssembler.AssembleAsync(descriptor,
+            async (chunk, token) => await GetChunkAsync(context, chunk, progress, token), ct);
+        progress?.Report(new("verification", capture.Samples.Length * 2, capture.Samples.Length * 2));
+        return capture;
     }
 
-    private async Task<byte[]> GetChunkAsync(NetworkSessionContext context, Chunk chunk, IProgress<NetworkImportProgress>? progress, CancellationToken ct)
+    private async Task<byte[]> GetChunkAsync(NetworkSessionContext context, EventRawChunk chunk, IProgress<NetworkImportProgress>? progress, CancellationToken ct)
     {
         var ranges = Path.Combine(context.CacheDirectory, "ranges"); Directory.CreateDirectory(ranges);
-        var final = Path.Combine(ranges, $"raw-{chunk.Segment:D4}.{chunk.Offset}.{chunk.RawBytes}.{chunk.Crc32:X8}.bin");
+        var final = Path.Combine(ranges, $"raw-{chunk.SegmentIndex:D4}.{chunk.SegmentOffset}.{chunk.RawBytes}.{chunk.Crc32:X8}.bin");
         if (File.Exists(final)) { var cached = await File.ReadAllBytesAsync(final, ct); if (cached.Length == chunk.RawBytes && Crc32(cached) == chunk.Crc32) { progress?.Report(new("cache", cached.Length, cached.Length, true)); return cached; } File.Delete(final); }
         var part = final + ".part"; long have = File.Exists(part) ? new FileInfo(part).Length : 0; if (have > chunk.RawBytes) { File.Delete(part); have = 0; }
         while (have < chunk.RawBytes) {
-            var start = chunk.Offset + have; var end = chunk.Offset + chunk.RawBytes - 1;
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"api/v1/sessions/{Uri.EscapeDataString(context.Folder)}/files/raw-{chunk.Segment:D4}.bin");
+            var start = chunk.SegmentOffset + have; var end = chunk.SegmentOffset + chunk.RawBytes - 1;
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"api/v1/sessions/{Uri.EscapeDataString(context.Folder)}/files/raw-{chunk.SegmentIndex:D4}.bin");
             request.Headers.Range = new RangeHeaderValue(start, end); using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (response.StatusCode == HttpStatusCode.NotFound)
+                throw new RawCaptureLoadException(RawIntegrityStatus.MissingChunk, $"RAW segment {chunk.SegmentIndex} is missing.");
             if (response.StatusCode != HttpStatusCode.PartialContent) throw new InvalidDataException($"Expected HTTP 206, got {(int)response.StatusCode}.");
             var range = response.Content.Headers.ContentRange; var length = response.Content.Headers.ContentLength;
             if (range?.From != start || range.To != end || length != end - start + 1) throw new InvalidDataException("Invalid Content-Range or Content-Length.");
             await using var input = await response.Content.ReadAsStreamAsync(ct); await using var output = new FileStream(part, FileMode.Append, FileAccess.Write, FileShare.None, 8192, true);
             var buffer = new byte[8192]; int n; while ((n = await input.ReadAsync(buffer, ct)) > 0) { await output.WriteAsync(buffer.AsMemory(0, n), ct); have += n; progress?.Report(new("RAW requested", have, chunk.RawBytes)); }
         }
-        var data = await File.ReadAllBytesAsync(part, ct); if (data.Length != chunk.RawBytes || Crc32(data) != chunk.Crc32) throw new InvalidDataException("Downloaded chunk CRC is invalid; retry is available.");
+        var data = await File.ReadAllBytesAsync(part, ct);
+        if (data.Length != chunk.RawBytes) throw new RawCaptureLoadException(RawIntegrityStatus.Incomplete, "Downloaded chunk length is invalid; retry is available.");
+        if (Crc32(data) != chunk.Crc32) throw new RawCaptureLoadException(RawIntegrityStatus.CrcInvalid, "Downloaded chunk CRC is invalid; retry is available.");
         File.Move(part, final, true); return data;
     }
 
-    private static Chunk ParseChunk(string line) { using var doc = JsonDocument.Parse(line); var r = doc.RootElement; return new(U64(r,"sample_start"),U64(r,"sample_end"),r.GetProperty("segment_index").GetInt32(),long.Parse(r.GetProperty("segment_offset").GetString()!),r.GetProperty("raw_bytes").GetInt32(),Convert.ToUInt32(r.GetProperty("crc32").GetString(),16)); }
-    private sealed record Chunk(ulong SampleStart, ulong SampleEnd, int Segment, long Offset, int RawBytes, uint Crc32);
     private static ulong U64(JsonElement e, string name) { var v=e.GetProperty(name); return v.ValueKind==JsonValueKind.String?ulong.Parse(v.GetString()!):v.GetUInt64(); }
     private static ulong U64Either(JsonElement e, string first, string second) => e.TryGetProperty(first, out _) ? U64(e, first) : U64(e, second);
     private static long ReadInt64(JsonElement value) => value.ValueKind == JsonValueKind.String ? long.Parse(value.GetString()!) : value.GetInt64();
@@ -171,6 +159,6 @@ public sealed class NetworkImportService : IDisposable
         return SafePart(sessionUuid);
     }
     private void RememberAnalyzer(AnalyzerInfo a) { Directory.CreateDirectory(_cacheRoot); File.WriteAllText(Path.Combine(_cacheRoot,"known-analyzer.txt"),BaseUri.ToString()); }
-    public static uint Crc32(ReadOnlySpan<byte> data) { uint crc=0xFFFFFFFF;foreach(var b in data){crc^=b;for(var i=0;i<8;i++)crc=(crc>>1)^((crc&1)!=0?0xEDB88320u:0u);}return crc^0xFFFFFFFF; }
+    public static uint Crc32(ReadOnlySpan<byte> data) => EventRawAssembler.Crc32(data);
     public void Dispose() => _http.Dispose();
 }

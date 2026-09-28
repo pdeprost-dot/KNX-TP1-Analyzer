@@ -54,42 +54,53 @@
             <Grid ColumnDefinitions="560,*" ColumnSpacing="8">
               <Grid RowDefinitions="Auto,Auto,*" RowSpacing="5">
                 <ComboBox ItemsSource="{Binding AnalogSortOptions}" SelectedItem="{Binding SelectedAnalogSort}" HorizontalAlignment="Left" MinWidth="180"/>
-                <Grid Grid.Row="1" ColumnDefinitions="55,110,*,105,80" Margin="7">
-                  <TextBlock Text="Event"/><TextBlock Grid.Column="1" Text="Position"/><TextBlock Grid.Column="2" Text="Type / metadata"/>
-                  <TextBlock Grid.Column="3" Text="RAW window"/><TextBlock Grid.Column="4" Text="CRC"/>
+                <Grid Grid.Row="1" ColumnDefinitions="45,92,95,75,55,65,55" Margin="7">
+                  <TextBlock Text="Event"/><TextBlock Grid.Column="1" Text="Position"/><TextBlock Grid.Column="2" Text="Duration"/>
+                  <TextBlock Grid.Column="3" Text="Samples"/><TextBlock Grid.Column="4" Text="Chunks"/>
+                  <TextBlock Grid.Column="5" Text="D44 max"/><TextBlock Grid.Column="6" Text="CRC"/>
                 </Grid>
                 <ListBox Grid.Row="2" ItemsSource="{Binding AnalogEvents}" SelectedItem="{Binding SelectedAnalogEvent}">
                   <ListBox.ItemTemplate><DataTemplate>
-                    <Grid ColumnDefinitions="55,110,*,105,80" Margin="3">
+                    <Grid ColumnDefinitions="45,92,95,75,55,65,55" Margin="3">
                       <TextBlock Text="{Binding EventId}"/><TextBlock Grid.Column="1" Text="{Binding PositionText}"/>
-                      <TextBlock Grid.Column="2" Text="{Binding Kind}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="3" Text="{Binding WindowText}"/>
-                      <TextBlock Grid.Column="4" Text="{Binding CrcText}"/>
+                      <TextBlock Grid.Column="2" Text="{Binding DurationText}"/><TextBlock Grid.Column="3" Text="{Binding WindowText}"/>
+                      <TextBlock Grid.Column="4" Text="{Binding ChunkCountText}"/><TextBlock Grid.Column="5" Text="{Binding D44MaximumText}"/>
+                      <TextBlock Grid.Column="6" Text="{Binding CrcText}"/>
                     </Grid>
                   </DataTemplate></ListBox.ItemTemplate>
                 </ListBox>
               </Grid>
-              <Grid Grid.Column="1" RowDefinitions="Auto,220,Auto,Auto,Auto,Auto,*" RowSpacing="8">
-                <StackPanel Orientation="Horizontal" Spacing="12">
-                  <Button Content="Reset / Fit" Click="ResetWaveformClicked"/>
-                  <TextBlock Text="Wheel: time zoom  •  Drag: pan  •  Ctrl+wheel: Y zoom  •  Double-click: fit" VerticalAlignment="Center"/>
+              <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+              <Grid RowDefinitions="Auto,210,145,Auto,Auto,Auto,Auto,Auto" RowSpacing="6">
+                <StackPanel Spacing="4">
+                  <StackPanel Orientation="Horizontal" Spacing="12">
+                    <Button Content="Previous" Click="PreviousEventClicked"/>
+                    <Button Content="Next" Click="NextEventClicked"/>
+                    <Button Content="Reset / Fit" Click="ResetWaveformClicked"/>
+                    <TextBlock Text="Wheel: time zoom  •  Drag: pan  •  Ctrl+wheel: Y zoom  •  Double-click: fit" VerticalAlignment="Center"/>
+                  </StackPanel>
+                  <TextBlock Text="{Binding EventViewerSummary}" FontWeight="SemiBold" TextWrapping="Wrap"/>
                 </StackPanel>
                 <Border Grid.Row="1" BorderBrush="Gray" BorderThickness="1">
                   <views:WaveformView x:Name="Waveform" Capture="{Binding SelectedCapture}"/>
                 </Border>
-                <Grid Grid.Row="2" ColumnDefinitions="65,*,80" ColumnSpacing="8">
+                <Border Grid.Row="2" BorderBrush="Gray" BorderThickness="1">
+                  <views:WaveformView x:Name="D44Waveform" D44Mode="True" Capture="{Binding SelectedCapture}"/>
+                </Border>
+                <Grid Grid.Row="3" ColumnDefinitions="65,*,80" ColumnSpacing="8">
                   <TextBlock Text="Zoom" VerticalAlignment="Center"/>
                   <Slider x:Name="ZoomSlider" Grid.Column="1" Minimum="0" Maximum="1" ValueChanged="ZoomSliderChanged"/>
-                  <ComboBox x:Name="AnalogUnit" Grid.Column="2" SelectionChanged="AnalogUnitChanged" SelectedIndex="0">
+                  <ComboBox x:Name="AnalogUnit" Grid.Column="2" SelectionChanged="AnalogUnitChanged" SelectedIndex="1">
                     <ComboBoxItem Content="Estimated mV"/><ComboBoxItem Content="RAW"/>
                   </ComboBox>
                 </Grid>
-                <Grid Grid.Row="3" ColumnDefinitions="65,*" ColumnSpacing="8">
+                <Grid Grid.Row="4" ColumnDefinitions="65,*" ColumnSpacing="8">
                   <TextBlock Text="Position" VerticalAlignment="Center"/>
                   <Slider x:Name="PositionSlider" Grid.Column="1" Minimum="0" Maximum="1" ValueChanged="PositionSliderChanged"/>
                 </Grid>
-                <TextBlock Grid.Row="4" Text="{Binding AnalogAxis}" TextWrapping="Wrap"/>
-                <TextBlock Grid.Row="5" Text="{Binding AnalogVariationNotice}" FontWeight="Bold"/>
-                <Grid Grid.Row="6" ColumnDefinitions="3*,2*" ColumnSpacing="12">
+                <TextBlock Grid.Row="5" Text="{Binding AnalogAxis}" TextWrapping="Wrap"/>
+                <StackPanel Grid.Row="6"><TextBlock Text="{Binding AnalogCursor}" FontFamily="Consolas"/><TextBlock Text="{Binding AnalogVariationNotice}" FontWeight="Bold"/></StackPanel>
+                <Grid Grid.Row="7" ColumnDefinitions="3*,2*" ColumnSpacing="12" MinHeight="300">
                   <Grid RowDefinitions="Auto,Auto,Auto,Auto,*" RowSpacing="6">
                     <TextBlock Text="ANALYSE OFFLINE RAW" FontWeight="Bold" FontSize="15"/>
                     <TextBlock Grid.Row="1" Text="{Binding OfflineAnalysisSummary}" TextWrapping="Wrap" Opacity="0.75"/>
@@ -143,6 +154,7 @@
                   </Grid>
                 </Grid>
               </Grid>
+              </ScrollViewer>
             </Grid>
           </TabItem>
           <TabItem Header="Participants">

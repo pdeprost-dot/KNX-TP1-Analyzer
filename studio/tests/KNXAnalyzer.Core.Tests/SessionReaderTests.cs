@@ -51,7 +51,7 @@ public class SessionReaderTests
         var folder = Path.Combine(Path.GetTempPath(), "knxstudio-s3-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         try {
-            File.WriteAllText(Path.Combine(folder, "session-start.json"), """{"schema_version":"knx-long-session-1.0","session_id":"KNX-S3","start_utc":"2026-09-27T18:03:36.528Z"}""");
+            File.WriteAllText(Path.Combine(folder, "session-start.json"), """{"schema_version":"knx-long-session-1.0","session_id":"KNX-S3","start_utc":"2026-09-27T18:03:36.528Z","sample_rate_hz":83333,"d44_threshold":1262,"pre_samples":8333,"post_samples":8333}""");
             File.WriteAllText(Path.Combine(folder, "test-result.json"), """{"lifecycle":"CLOSED","duration_us":"60094291","raw_bytes":"8"}""");
             File.WriteAllText(Path.Combine(folder, "events.jsonl"), """{"event_id":"1","sample_start":"10","trigger_sample":"11","sample_end":"14","trigger_timestamp_us":"120"}""" + Environment.NewLine);
             var raw = new byte[8]; var crc = NetworkImportService.Crc32(raw);
@@ -61,8 +61,14 @@ public class SessionReaderTests
             var session = EventRawV2Reader.OpenSession(folder);
             Assert.Equal("CLOSED", session.State);
             Assert.Equal("2026-09-27T18:03:36.528Z", session.DateTime);
-            Assert.Equal((ulong)11, Assert.Single(session.AnalogEvents).SampleTrigger);
-            Assert.Equal((uint)1, EventRawV2Reader.ReadCapture(folder, 1).TriggerIndex);
+            var analog = Assert.Single(session.AnalogEvents);
+            Assert.Equal((ulong)11, analog.SampleTrigger);
+            Assert.Equal(1, analog.RawDescriptor?.Chunks.Count);
+            Assert.Equal((uint)83333, analog.RawDescriptor?.SampleRateHz);
+            Assert.Equal((uint)1262, analog.RawDescriptor?.Threshold);
+            var capture = EventRawV2Reader.ReadCapture(folder, 1);
+            Assert.Equal((uint)1, capture.TriggerIndex);
+            Assert.Equal(RawIntegrityStatus.Valid, capture.Integrity);
         } finally { Directory.Delete(folder, true); }
     }
 

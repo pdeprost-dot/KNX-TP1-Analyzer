@@ -12,6 +12,7 @@ namespace KNXAnalyzer.Desktop.Views;
 public partial class MainWindow : Window
 {
     private bool _updatingSliders;
+    private bool _syncingWaveforms;
     public MainWindow()
     {
         InitializeComponent();
@@ -23,11 +24,29 @@ public partial class MainWindow : Window
             PositionSlider.Value = Waveform.PositionSliderValue;
             _updatingSliders = false;
         };
+        Waveform.ViewportSamplesChanged += (_, range) => Synchronize(D44Waveform, range.Start, range.End);
+        D44Waveform.ViewportSamplesChanged += (_, range) => Synchronize(Waveform, range.Start, range.End);
+        Waveform.CursorChanged += (_, value) => SetCursor(value);
+        D44Waveform.CursorChanged += (_, value) => SetCursor(value);
+    }
+
+    private void Synchronize(WaveformView target, double start, double end)
+    {
+        if (_syncingWaveforms) return;
+        _syncingWaveforms = true;
+        target.SetViewport(start, end);
+        _syncingWaveforms = false;
+    }
+
+    private void SetCursor(string value)
+    {
+        if (DataContext is MainViewModel vm) vm.AnalogCursor = value;
     }
 
     private void AttachViewModel()
     {
         if (DataContext is not MainViewModel vm) return;
+        Waveform.SetRawDisplay(AnalogUnit.SelectedIndex == 1);
         vm.PropertyChanged += (_, e) => {
             if (e.PropertyName == nameof(MainViewModel.SelectedOfflineCandidate) && vm.SelectedOfflineCandidate is { } candidate)
                 Waveform.ShowSampleRange(candidate.StartSample, candidate.EndSample);
@@ -115,7 +134,19 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ResetWaveformClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e) => Waveform.ResetFit();
+    private void ResetWaveformClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        Waveform.ResetFit();
+        D44Waveform.ResetFit();
+    }
+    private void PreviousEventClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is MainViewModel vm) vm.SelectAdjacentEvent(-1);
+    }
+    private void NextEventClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is MainViewModel vm) vm.SelectAdjacentEvent(1);
+    }
 
     private async void OpenClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {

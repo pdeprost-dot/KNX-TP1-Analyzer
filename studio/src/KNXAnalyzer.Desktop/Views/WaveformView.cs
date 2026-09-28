@@ -12,9 +12,14 @@ public class WaveformView : Control
 {
     public static readonly StyledProperty<RawCapture?> CaptureProperty =
         AvaloniaProperty.Register<WaveformView, RawCapture?>(nameof(Capture));
+    public static readonly StyledProperty<bool> D44ModeProperty =
+        AvaloniaProperty.Register<WaveformView, bool>(nameof(D44Mode));
     public RawCapture? Capture { get => GetValue(CaptureProperty); set => SetValue(CaptureProperty, value); }
+    public bool D44Mode { get => GetValue(D44ModeProperty); set => SetValue(D44ModeProperty, value); }
 
     public event EventHandler<string>? ViewportChanged;
+    public event EventHandler<(double Start, double End)>? ViewportSamplesChanged;
+    public event EventHandler<string>? CursorChanged;
     public double VisibleStartSample => _start;
     public double VisibleEndSample => _end;
     public bool ShowRaw { get; private set; }
@@ -29,7 +34,7 @@ public class WaveformView : Control
     private bool _dragging;
     private double _lastDragX;
 
-    static WaveformView() => AffectsRender<WaveformView>(CaptureProperty);
+    static WaveformView() => AffectsRender<WaveformView>(CaptureProperty, D44ModeProperty);
 
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
@@ -70,6 +75,16 @@ public class WaveformView : Control
         _end = _start + width;
         UpdateVisibleRange();
         InvalidateVisual();
+    }
+
+    public void SetViewport(double start, double end)
+    {
+        var count = Capture?.Samples.Length ?? 0;
+        if (count == 0 || end <= start) return;
+        var width = Math.Clamp(end - start, Math.Min(32, count), count);
+        _start = Math.Clamp(start, 0, count - width);
+        _end = _start + width;
+        UpdateVisibleRange(); InvalidateVisual();
     }
 
     public void SetZoomSlider(double value)
@@ -134,11 +149,13 @@ public class WaveformView : Control
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         base.OnPointerMoved(e);
-        if (!_dragging || Bounds.Width <= 0) return;
         var x = e.GetPosition(this).X;
-        PanBySamples((_lastDragX - x) * (_end - _start) / Bounds.Width);
-        _lastDragX = x;
-        e.Handled = true;
+        if (_dragging && Bounds.Width > 0) {
+            PanBySamples((_lastDragX - x) * (_end - _start) / Bounds.Width);
+            _lastDragX = x;
+            e.Handled = true;
+        }
+        PublishCursor(x);
     }
 
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
@@ -160,10 +177,23 @@ public class WaveformView : Control
         string Format(double value) => value.ToString("+0.000;-0.000;0.000", CultureInfo.InvariantCulture);
         var trigger = _start <= capture.TriggerIndex && capture.TriggerIndex <= _end
             ? "trigger t=0 visible" : "trigger t=0 outside view";
-        var unit = ShowRaw ? "ADC RAW at GPIO5" : Calibration is null
+        var unit = D44Mode ? $"D44 | threshold {capture.Threshold}" : ShowRaw ? "ADC RAW at GPIO5" : Calibration is null
             ? "Estimated — experimental calibration | GPIO5 mV"
             : $"Estimated ADC voltage — recorded calibration ({Calibration.Source}, GPIO5 mV)";
         ViewportChanged?.Invoke(this, $"Visible: {Format(startMs)} to {Format(endMs)} ms | duration {endMs - startMs:F3} ms | {trigger} | {_end - _start:F0} samples | Y: {unit}");
+        ViewportSamplesChanged?.Invoke(this, (_start, _end));
+    }
+
+    private void PublishCursor(double x)
+    {
+        var capture = Capture;
+        const double plotLeft = 74;
+        var plotWidth = Bounds.Width - plotLeft;
+        if (capture is null || capture.Samples.Length == 0 || plotWidth <= 0 || x < plotLeft) return;
+        var sample = Math.Clamp((int)Math.Round(_start + (x - plotLeft) * (_end - _start) / plotWidth), 0, capture.Samples.Length - 1);
+        var timeMs = 1000.0 * (sample - (double)capture.TriggerIndex) / capture.SampleRateHz;
+        var d44 = sample < capture.D44.Length ? capture.D44[sample] : 0;
+        CursorChanged?.Invoke(this, $"Cursor: t={timeMs:+0.000;-0.000;0.000} ms | sample {capture.SampleStart + (ulong)sample:N0} | ADC {capture.Samples[sample]} | D44 {d44}");
     }
 
     public override void Render(DrawingContext context)
@@ -184,10 +214,11 @@ public class WaveformView : Control
 
         ushort visibleMin = ushort.MaxValue, visibleMax = 0;
         for (var i = first; i < last; i++) {
-            visibleMin = Math.Min(visibleMin, capture.Samples[i]);
-            visibleMax = Math.Max(visibleMax, capture.Samples[i]);
+            var value = D44Mode && i < capture.D44.Length ? capture.D44[i] : capture.Samples[i];
+            visibleMin = Math.Min(visibleMin, value);
+            visibleMax = Math.Max(visibleMax, value);
         }
-        double DisplayValue(double raw) => ShowRaw ? raw :
+        double DisplayValue(double raw) => D44Mode || ShowRaw ? raw :
             Calibration is null ? raw * ExperimentalEstimatedCalibration.ReferenceMillivolts / ExperimentalEstimatedCalibration.ReferenceRaw :
             Calibration.TryEstimateMillivolts((ushort)Math.Clamp(Math.Round(raw), 0, ushort.MaxValue), out var mv) ? mv : double.NaN;
         var margin = Math.Max(10.0, (visibleMax - visibleMin) * 0.08);
@@ -196,6 +227,7 @@ public class WaveformView : Control
         var yMinRaw = center - halfRange;
         var yRangeRaw = Math.Max(1, 2 * halfRange);
         double Y(ushort sample) => height - 1 - (sample - yMinRaw) * (height - 2) / yRangeRaw;
+        ushort Value(int index) => D44Mode && index < capture.D44.Length ? capture.D44[index] : capture.Samples[index];
 
         var gridPen = new Pen(Brushes.LightGray, 1);
         context.DrawLine(new Pen(Brushes.Gray, 1), new Point(plotLeft, 0), new Point(plotLeft, height));
@@ -203,23 +235,25 @@ public class WaveformView : Control
             var y = tick * (height - 1) / 4.0;
             var rawAtTick = yMinRaw + (1 - tick / 4.0) * yRangeRaw;
             var displayed = DisplayValue(rawAtTick);
-            var label = ShowRaw ? $"{displayed:F0}" : $"{displayed:F0} mV";
+            var label = D44Mode || ShowRaw ? $"{displayed:F0}" : $"{displayed:F0} mV";
             context.DrawLine(gridPen, new Point(plotLeft, y), new Point(width, y));
             var text = new FormattedText(label, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
                 new Typeface("Inter"), 11, Brushes.Gray);
             context.DrawText(text, new Point(Math.Max(0, plotLeft - text.Width - 5), Math.Clamp(y - text.Height / 2, 0, height - text.Height)));
         }
-        var axisLabel = ShowRaw ? "ADC RAW" : "Estimated GPIO5 mV";
+        var axisLabel = D44Mode ? "D44" : ShowRaw ? "ADC RAW" : "Estimated GPIO5 mV";
         context.DrawText(new FormattedText(axisLabel, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
             new Typeface("Inter"), 11, Brushes.Gray), new Point(3, 2));
 
-        var wave = new Pen(Brushes.DodgerBlue, 1);
+        var wave = new Pen(D44Mode ? Brushes.MediumPurple : Brushes.DodgerBlue, 1);
         if (span <= plotWidth * 2) {
             Point? previous = null;
             for (var i = first; i < last; i++) {
-                var point = new Point(plotLeft + (i - start) * plotWidth / span, Y(capture.Samples[i]));
+                var point = new Point(plotLeft + (i - start) * plotWidth / span, Y(Value(i)));
                 if (previous is Point p) context.DrawLine(wave, p, point);
                 previous = point;
+                if (D44Mode && capture.Threshold > 0 && Value(i) > capture.Threshold)
+                    context.DrawEllipse(Brushes.OrangeRed, null, point, 2, 2);
             }
         } else {
             var columns = Math.Max(1, (int)plotWidth);
@@ -228,12 +262,19 @@ public class WaveformView : Control
                 var b = Math.Clamp((int)Math.Ceiling(start + (x + 1) * span / columns), a + 1, last);
                 ushort low = ushort.MaxValue, high = 0;
                 for (var i = a; i < b; i++) {
-                    low = Math.Min(low, capture.Samples[i]);
-                    high = Math.Max(high, capture.Samples[i]);
+                    low = Math.Min(low, Value(i));
+                    high = Math.Max(high, Value(i));
                 }
-                context.DrawLine(wave, new Point(plotLeft + x, Y(high)), new Point(plotLeft + x, Y(low)));
+                var pen = D44Mode && capture.Threshold > 0 && high > capture.Threshold ? new Pen(Brushes.OrangeRed, 1) : wave;
+                context.DrawLine(pen, new Point(plotLeft + x, Y(high)), new Point(plotLeft + x, Y(low)));
             }
         }
+        if (D44Mode && capture.Threshold > 0 && capture.Threshold >= yMinRaw && capture.Threshold <= yMinRaw + yRangeRaw) {
+            var thresholdY = Y(checked((ushort)capture.Threshold));
+            context.DrawLine(new Pen(Brushes.OrangeRed, 1, dashStyle: DashStyle.Dash), new Point(plotLeft, thresholdY), new Point(width, thresholdY));
+        }
+        context.DrawLine(new Pen(Brushes.SeaGreen, 1), new Point(plotLeft, 0), new Point(plotLeft, height));
+        context.DrawLine(new Pen(Brushes.SeaGreen, 1), new Point(width - 1, 0), new Point(width - 1, height));
         if (capture.TriggerIndex >= start && capture.TriggerIndex <= end) {
             var triggerX = plotLeft + (capture.TriggerIndex - start) * plotWidth / span;
             context.DrawLine(new Pen(Brushes.OrangeRed, 1), new Point(triggerX, 0), new Point(triggerX, height));

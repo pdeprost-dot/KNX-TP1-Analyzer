@@ -44,6 +44,8 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty] private int selectedTabIndex;
     [ObservableProperty] private string analogVariationNotice = "";
     [ObservableProperty] private string analogAxis = "Time axis unavailable";
+    [ObservableProperty] private string analogCursor = "Move the pointer over either graph to inspect a sample.";
+    [ObservableProperty] private string eventViewerSummary = "Select an event to open Event RAW Viewer V1.";
     [ObservableProperty] private int observedTrafficCount;
     [ObservableProperty] private int syntheticExcludedCount;
     [ObservableProperty] private int participantCount;
@@ -202,18 +204,18 @@ public partial class MainViewModel : ViewModelBase
         AnalogEvents.Clear();
         if (SelectedSession is null) return;
         var ordered = SelectedAnalogSort switch {
-            "P-P ascending" => SelectedSession.AnalogEvents.OrderBy(x => x.CaptureSummary?.PeakToPeak ?? int.MaxValue).ThenBy(x => x.EventId),
+            "P-P ascending" => SelectedSession.AnalogEvents.OrderBy(x => x.CaptureSummary?.PeakToPeak ?? x.RecordedPeakToPeak ?? int.MaxValue).ThenBy(x => x.EventId),
             "Event ID" => SelectedSession.AnalogEvents.OrderBy(x => x.EventId),
-            _ => SelectedSession.AnalogEvents.OrderByDescending(x => x.CaptureSummary?.PeakToPeak ?? -1).ThenBy(x => x.EventId)
+            _ => SelectedSession.AnalogEvents.OrderByDescending(x => x.CaptureSummary?.PeakToPeak ?? x.RecordedPeakToPeak ?? -1).ThenBy(x => x.EventId)
         };
         foreach (var item in ordered) AnalogEvents.Add(item);
         if (selected is not null && AnalogEvents.Contains(selected)) SelectedAnalogEvent = selected;
     }
     public void SelectLargestCapture()
     {
-        var winner = Sessions.SelectMany(s => s.AnalogEvents.Where(e => e.CaptureSummary is { CrcValid: true })
+        var winner = Sessions.SelectMany(s => s.AnalogEvents.Where(e => e.RawPersisted)
             .Select(e => (Session: s, Event: e)))
-            .OrderByDescending(x => x.Event.CaptureSummary!.PeakToPeak).FirstOrDefault();
+            .OrderByDescending(x => x.Event.CaptureSummary?.PeakToPeak ?? x.Event.RecordedPeakToPeak ?? -1).FirstOrDefault();
         if (winner.Event is null) return;
         SelectedSession = winner.Session;
         SelectedAnalogSort = "P-P descending";
@@ -247,7 +249,7 @@ public partial class MainViewModel : ViewModelBase
         OfflineCandidates.Clear(); SelectedOfflineCandidate = null; OfflineAnalysisSummary = "Analyse offline indisponible.";
         OfflineSampleCount = 0; OfflineDuration = OfflineBaseline = OfflineNoiseRms = OfflineActivity = "—";
         OfflinePulseCount = OfflineCandidateCount = OfflineValidFrameCount = 0; ClearOfflineFrame();
-        if (value is null || SelectedSession is null) { AnalogDetails = "Select an analog event."; return; }
+        if (value is null || SelectedSession is null) { AnalogDetails = "Select an analog event."; EventViewerSummary = "Select an event to open Event RAW Viewer V1."; return; }
         AnalogDetails = JsonSerializer.Serialize(value.Original, new JsonSerializerOptions { WriteIndented = true });
         if (!value.RawPersisted) return;
         if (SelectedSession.Network is not null && networkImport is not null) { _ = LoadNetworkCaptureAsync(SelectedSession, value); return; }
@@ -255,7 +257,9 @@ public partial class MainViewModel : ViewModelBase
         try {
             var raw = value.EventRawV2 ? EventRawV2Reader.ReadCapture(SelectedSession.DirectoryPath, value.EventId) : RawCapture.Read(path);
             PresentCapture(raw);
-        } catch (Exception e) { AnalogDetails = $"RAW unavailable: {e.Message}\n\n" + AnalogDetails; }
+        } catch (RawCaptureLoadException e) { SetRawIntegrity(value, e.Status); AnalogDetails = $"RAW {e.Status}: {e.Message}\n\n" + AnalogDetails; EventViewerSummary = $"Event {value.EventId} · RAW {e.Status}"; }
+        catch (InvalidDataException e) { SetRawIntegrity(value, RawIntegrityStatus.CrcInvalid); AnalogDetails = $"RAW CRC invalid: {e.Message}\n\n" + AnalogDetails; EventViewerSummary = $"Event {value.EventId} · RAW CRC invalid"; }
+        catch (Exception e) { AnalogDetails = $"RAW unavailable: {e.Message}\n\n" + AnalogDetails; }
     }
     private async Task LoadNetworkCaptureAsync(Session session, AnalogEvent value)
     {
@@ -266,24 +270,54 @@ public partial class MainViewModel : ViewModelBase
             if (!ReferenceEquals(SelectedSession, session) || SelectedAnalogEvent?.EventId != value.EventId) return;
             value.CaptureSummary = raw.Summary; PresentCapture(raw);
             NetworkProgress = "verification · CRC OK · decode"; Status = $"Event {value.EventId}: network RAW verified and decoded.";
-        } catch (Exception e) { NetworkProgress = "error · retry available"; Status = $"Network RAW: {e.Message}"; AnalogDetails = $"RAW unavailable: {e.Message}\n\n" + AnalogDetails; }
+        } catch (RawCaptureLoadException e) { SetRawIntegrity(value, e.Status); NetworkProgress = $"error · {e.Status}"; Status = $"Network RAW {e.Status}: {e.Message}"; AnalogDetails = $"RAW {e.Status}: {e.Message}\n\n" + AnalogDetails; EventViewerSummary = $"Event {value.EventId} · RAW {e.Status}"; }
+        catch (Exception e) { NetworkProgress = "error · retry available"; Status = $"Network RAW: {e.Message}"; AnalogDetails = $"RAW unavailable: {e.Message}\n\n" + AnalogDetails; }
+    }
+    public void SelectAdjacentEvent(int delta)
+    {
+        if (AnalogEvents.Count == 0) return;
+        var index = SelectedAnalogEvent is null ? 0 : AnalogEvents.IndexOf(SelectedAnalogEvent);
+        SelectedAnalogEvent = AnalogEvents[Math.Clamp(index + delta, 0, AnalogEvents.Count - 1)];
     }
     private void PresentCapture(RawCapture raw)
     {
         if (!raw.CrcValid) throw new InvalidDataException("RAW CRC is invalid; decode refused.");
+        if (SelectedAnalogEvent is { } selected) {
+            selected.CaptureSummary = raw.Summary;
+            selected.RawIntegrity = raw.Integrity;
+            selected.D44Maximum = raw.D44Maximum;
+            selected.ThresholdExceedanceCount = raw.ThresholdExceedanceIndices.Length;
+            var index = AnalogEvents.IndexOf(selected);
+            if (index >= 0) AnalogEvents[index] = selected;
+        }
         SelectedCapture = raw; ApplyOfflineAnalysis(raw);
+        EventViewerSummary = $"Event {raw.EventId} · {raw.DurationMilliseconds:F3} ms · {raw.Samples.Length:N0} samples · {raw.SampleRateHz:N0} Hz · ADC {raw.Minimum}…{raw.Maximum} · D44 max {raw.D44Maximum} · threshold {raw.Threshold} · {raw.Integrity}";
         AnalogVariationNotice = raw.PeakToPeak <= 2 ? "No analog variation in this capture" : "";
         AnalogAxis = raw.SampleRateHz == 0 ? "Time axis unavailable (sample rate 0)" : $"Time: {-1000.0 * raw.TriggerIndex / raw.SampleRateHz:F1} ms     trigger t=0     +{1000.0 * (raw.Samples.Length - raw.TriggerIndex) / raw.SampleRateHz:F1} ms";
         var pipeline = AnalogVoltagePipeline.FromSessionMetadata(SelectedSession!.Metadata);
+        var s3Gpio1 = SelectedSession.StartMetadata.ValueKind == JsonValueKind.Object &&
+            SelectedSession.StartMetadata.TryGetProperty("adc_gpio", out var adcGpio) && adcGpio.TryGetInt32(out var gpio) && gpio == 1;
         string voltage;
-        if (pipeline.Calibration is null) {
+        if (s3Gpio1) {
+            voltage = "ADC RAW is authoritative. No voltage conversion is recorded for the XIAO GPIO1 front-end.";
+        } else if (pipeline.Calibration is null) {
             voltage = $"Estimated ADC voltage — experimental calibration (GPIO5): {ExperimentalEstimatedCalibration.EstimateMillivolts(raw.Minimum):F0}–{ExperimentalEstimatedCalibration.EstimateMillivolts(raw.Maximum):F0} mV. One approximate point; proportional display assumption; accuracy unknown. RAW remains authoritative.";
         } else if (pipeline.TryEstimateGpio5Millivolts(raw.Minimum, out var lowMv) && pipeline.TryEstimateGpio5Millivolts(raw.Maximum, out var highMv)) {
             voltage = $"Estimated ADC at GPIO5: {lowMv:F1}–{highMv:F1} mV (calibration: {pipeline.Calibration.Source}).";
             if (pipeline.TryEstimateKnxBusVolts(raw.Minimum, out var lowBus) && pipeline.TryEstimateKnxBusVolts(raw.Maximum, out var highBus))
                 voltage += $" Estimated KNX bus: {lowBus:F2}–{highBus:F2} V (divider: {pipeline.Divider!.Source}).";
         } else voltage = "ADC calibration does not cover this RAW range. GPIO5 voltage is unavailable.";
-        AnalogDetails = $"RAW at GPIO5: {raw.Samples.Length} samples | {raw.SampleRateHz} Hz | min {raw.Minimum} | max {raw.Maximum} | P-P {raw.PeakToPeak} | mean {raw.Mean:F2} | CRC OK | trigger index {raw.TriggerIndex}\n{voltage}\n\n" + AnalogDetails;
+        AnalogDetails = $"EVENT RAW VIEWER V1\nEvent {raw.EventId} | {raw.ChunkCount} chunks | {raw.Samples.Length:N0} samples | {raw.DurationMilliseconds:F3} ms | {raw.SampleRateHz:N0} Hz\n" +
+            $"Samples [{raw.SampleStart:N0}, {raw.SampleEnd:N0}) | trigger {raw.TriggerSample:N0} (index {raw.TriggerIndex:N0}) | actual pre {raw.TriggerIndex:N0} | actual post {raw.Samples.Length - raw.TriggerIndex:N0} | configured pre/post {raw.ConfiguredPreSamples:N0}/{raw.ConfiguredPostSamples:N0}\n" +
+            $"ADC min {raw.Minimum} | max {raw.Maximum} | P-P {raw.PeakToPeak} | mean {raw.Mean:F3}\n" +
+            $"D44 max {raw.D44Maximum} | threshold {raw.Threshold} | D44 > threshold: {raw.ThresholdExceedanceIndices.Length:N0}\n" +
+            $"Integrity {raw.Integrity} | CRC OK\n{voltage}\n\n" + AnalogDetails;
+    }
+    private void SetRawIntegrity(AnalogEvent item, RawIntegrityStatus status)
+    {
+        item.RawIntegrity = status;
+        var index = AnalogEvents.IndexOf(item);
+        if (index >= 0) AnalogEvents[index] = item;
     }
     partial void OnSelectedOfflineProfileChanged(Tp1AnalogDecodeProfile value)
     {

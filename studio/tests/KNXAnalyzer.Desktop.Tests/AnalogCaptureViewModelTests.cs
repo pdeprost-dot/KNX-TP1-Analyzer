@@ -6,6 +6,16 @@ namespace KNXAnalyzer.Desktop.Tests;
 public class AnalogCaptureViewModelTests
 {
     [Fact]
+    public void DistinguishesPendingRawAnalysisFromUnavailableData()
+    {
+        var item = new KNXAnalyzer.Core.AnalogEvent { EventId = 1, RawPersisted = true };
+        Assert.Equal("Pending", item.D44MaximumText);
+        Assert.Equal("Pending", item.CrcText);
+        item.RawIntegrity = KNXAnalyzer.Core.RawIntegrityStatus.MissingChunk;
+        Assert.Equal("Missing", item.CrcText);
+    }
+
+    [Fact]
     public void RefusesToDecodeLocalRawWhenCrcIsInvalid()
     {
         var root = Path.Combine(Path.GetTempPath(), "knxstudio-invalid-crc-" + Guid.NewGuid().ToString("N"));
@@ -20,6 +30,7 @@ public class AnalogCaptureViewModelTests
             vm.SelectedAnalogEvent = Assert.Single(vm.AnalogEvents);
             Assert.Null(vm.SelectedCapture);
             Assert.Contains("CRC is invalid; decode refused", vm.AnalogDetails);
+            Assert.Equal("Invalid", vm.SelectedAnalogEvent.CrcText);
             Assert.Empty(vm.OfflineCandidates);
         } finally { Directory.Delete(root, true); }
     }
@@ -52,6 +63,11 @@ public class AnalogCaptureViewModelTests
             Assert.Contains("Experimental / field candidate", vm.OfflineAnalysisSummary);
             vm.SelectedAnalogSort = "P-P ascending";
             Assert.Equal([3u, 2u], vm.AnalogEvents.Select(x => x.EventId));
+            vm.SelectedAnalogEvent = vm.AnalogEvents[0];
+            vm.SelectAdjacentEvent(1);
+            Assert.Equal((uint)2, vm.SelectedAnalogEvent?.EventId);
+            vm.SelectAdjacentEvent(-1);
+            Assert.Equal((uint)3, vm.SelectedAnalogEvent?.EventId);
             vm.SelectedSession = vm.Sessions.Single(x => x.Id == "s-a");
             vm.SelectedAnalogEvent = Assert.Single(vm.AnalogEvents);
             Assert.Equal("No analog variation in this capture", vm.AnalogVariationNotice);

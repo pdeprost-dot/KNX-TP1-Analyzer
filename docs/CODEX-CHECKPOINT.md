@@ -86,6 +86,24 @@ No private session, RAW capture, validation bundle, or local SDK belongs in Git.
   **17/17** and Desktop **4/4** tests passing. NU1900 remains an environmental
   warning because the NuGet vulnerability feed was unavailable.
 
+## Studio Event RAW Viewer V1
+
+- Studio reconstructs an event lazily from the `knx-long-session-1.0`
+  `uint16_le` RAW chunks, preserving 64-bit sample positions and validating
+  every chunk CRC before display.
+- The firmware D44 definition is reproduced deterministically in Core, using
+  available pre-event sample context; ADC and D44 graphs share navigation and
+  expose the recorded session threshold.
+- Missing chunks, gaps, incomplete data and invalid CRC are explicit states;
+  no known gap is drawn as a continuous signal.
+- Real session **KNX-F35F14A4** validated: **18/18** events reconstructed and
+  all referenced chunks CRC-valid. Human Windows validation covered ADC/D44
+  rendering, threshold markers, cursor, zoom, pan, fit, previous/next and the
+  vertically scrollable layout.
+- Release validation: Core **21/21** and Desktop **5/5** tests passing. This
+  milestone adds no new TP1 decoding and keeps the existing decoder profiles
+  unchanged.
+
 ## Next gate
 
 Do not start another acquisition or a new milestone automatically.
