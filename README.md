@@ -1,4 +1,15 @@
-# KNX TP1 Analyzer
+# KNX TP1 Analyzer — Firmware & Studio Monorepo
+
+This is the official, canonical repository for the KNX TP1 Analyzer project.
+It brings together KNX TP1 physical acquisition, analyzer firmware, session
+storage and APIs, KNX Analyzer Core, the cross-platform KNX TP1 Analyzer
+Studio desktop application, offline RAW analysis, tests, and shared
+documentation.
+
+The former
+[KNX-TP1-Analyzer-Studio](https://github.com/pdeprost-dot/KNX-TP1-Analyzer-Studio)
+repository is preserved for historical purposes only. All new firmware, Core,
+Studio, test, and documentation development belongs in this monorepo.
 
 ## Monorepo
 

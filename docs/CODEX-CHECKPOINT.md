@@ -2,6 +2,10 @@
 
 ## Repository layout
 
+- **pdeprost-dot/KNX-TP1-Analyzer** is the official canonical repository for
+  all Firmware, Core, Studio, test, and shared-documentation development.
+- **pdeprost-dot/KNX-TP1-Analyzer-Studio** is retained only as a historical
+  repository. Do not create new or parallel Studio development there.
 - The firmware remains in its existing root structure: **firmware/**, **tools/**, and root **docs/**.
 - Studio is imported under **studio/**.
 - Studio history was imported without squash.
