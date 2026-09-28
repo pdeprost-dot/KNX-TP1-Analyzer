@@ -53,6 +53,7 @@ public static class EventRawV2Reader
         session.PostTriggerSamples = checked((uint)(U64Optional(startMetadata, "post_samples") ?? 0));
         session.AcquisitionMode = String(startMetadata, "acquisition_mode") ??
             String(startMetadata, "capture_mode") ?? "EVENT";
+        session.Campaign = ReadFieldCampaign(startMetadata);
         session.RawChunks.AddRange(ReadChunks(full));
         var line = 0;
         foreach (var text in File.ReadLines(Path.Combine(full, "events.jsonl"))) {
@@ -89,6 +90,20 @@ public static class EventRawV2Reader
 
     private static string? String(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
+    private static FieldCampaign? ReadFieldCampaign(JsonElement start)
+    {
+        if (start.TryGetProperty("field_campaign", out var campaign) && campaign.ValueKind == JsonValueKind.Object) {
+            var duration = U64Optional(campaign, "requested_duration_s") ?? 0;
+            return new(String(campaign, "schema") ?? "knx-field-campaign-1.0", String(campaign, "site"),
+                String(campaign, "bus"), String(campaign, "point"), String(campaign, "note"), checked((uint)duration));
+        }
+        // Transitional V0.7 sessions used optional flat labels. Keep them readable without requiring them.
+        var site = String(start, "site_label"); var bus = String(start, "bus_label");
+        var point = String(start, "measurement_point"); var note = String(start, "operator_note");
+        if (site is null && bus is null && point is null && note is null) return null;
+        return new("legacy-flat-labels", site, bus, point, note, 0);
+    }
 
     public static RawCapture ReadCapture(string directory, uint eventId)
     {

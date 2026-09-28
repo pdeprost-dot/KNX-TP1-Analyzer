@@ -199,6 +199,7 @@ public partial class MainViewModel : ViewModelBase
         if (value is null) { Summary = "No session selected"; return; }
         RefreshAnalogSort();
         Summary = $"Analyzer: {value.Analyzer}   Session: {value.Id}   Mode: {value.AcquisitionMode}   State: {value.State}   Duration: {(value.DurationMs is long ms ? $"{TimeSpan.FromMilliseconds(ms):hh\\:mm\\:ss}" : "unknown")}   Events: {value.DisplayEventCount}   RAW available: {value.RawAvailableText}\n" +
+            $"{value.CampaignSummary}\n" +
             $"Date: {value.DateTime ?? "unavailable (device clock unset)"}   Format: {value.Generation}   Candidates: {value.Candidates.Count}   Valid: {value.Count("VALID_KNOWN") + value.Count("VALID_UNKNOWN")}   ACK: {value.Candidates.Count(x => x.Ack == "ACK")}   Parity: {value.Count("INVALID_PARITY")}   Checksum: {value.Count("INVALID_CHECKSUM")}   Timing: {value.Count("INVALID_TIMING")}   Incomplete: {value.Count("INCOMPLETE")}   Warnings: {value.Diagnostics.Count}";
         var decoded = value.Candidates.Select(KnxTelegramDecoder.Decode).Where(x => x is not null).ToArray();
         Summary += $"   Decoded standard: {decoded.Length}   Group: {decoded.Count(x => x!.DestinationType == "group")}   Individual: {decoded.Count(x => x!.DestinationType == "individual")}   Repeat: {decoded.Count(x => x!.Repeat)}";

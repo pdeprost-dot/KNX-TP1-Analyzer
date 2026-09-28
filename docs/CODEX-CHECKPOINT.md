@@ -148,6 +148,34 @@ No private session, RAW capture, validation bundle, or local SDK belongs in Git.
   observed transient minima of 2464 internal bytes, 1876 DMA bytes and
   884-byte largest blocks without corruption or failure.
 
+## Field Campaign V1
+
+- Firmware V0.8 adds only a preparation/metadata layer around the qualified
+  Continuous RAW pipeline. ADC, DMA, fixed buffers, 4096-sample chunks, SD
+  writer, integrity and finalization are unchanged; Wi-Fi remains OFF during
+  capture and no D44/TP1 analysis runs in this mode.
+- The Web form offers 10, 60 and 300 second presets plus 10–32400 seconds
+  custom duration. `site`, `bus` and `point` are limited to 64 UTF-8 bytes and
+  `note` to 160 bytes. Empty values are valid and TP1 calibration is informative,
+  not blocking, for Continuous RAW.
+- START validates IDLE/CLOSED state, HEALTHY storage, SD presence, mode,
+  duration, text limits and estimated RAW space plus a 16 MiB margin before
+  scheduling acquisition. Values are frozen in the versioned
+  `field_campaign` section of `session-start.json` and authoritative
+  `manifest.json`.
+- Studio displays the optional campaign metadata while retaining compatibility
+  with earlier EVENT, V0.7 Continuous RAW and transitional flat-label sessions.
+- Real validation session **KNX-135D1BFC**: 831488 samples, 203 chunks,
+  1662976 bytes, zero loss/gaps and zero DMA/ADC/SD/pool errors, invariant true,
+  CLOSED/COMPLETE. Session API and Studio bounded RAW/CRC import passed.
+- The first live import ended one HTTP metadata response prematurely; one
+  unchanged retry passed, with valid manifest, metadata, RAW and CRC and no
+  demonstrated SD/RAW corruption. No further network investigation belongs to
+  this milestone.
+- The flashed image used for the 10 s validation predates only the final HTML
+  escaping of user-entered campaign text. The final versioned source/build
+  includes this presentation-only hardening and was not redeployed for it.
+
 ## Next gate
 
 Do not start another acquisition or a new milestone automatically.

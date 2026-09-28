@@ -14,7 +14,7 @@
 #include "auto_calibration.h"
 
 #define S3_NETWORK_ENABLED 1
-constexpr const char *FIRMWARE_VERSION = "KNXAnalyzerField-s3-analog-v0.7.0-continuous-raw-v1";
+constexpr const char *FIRMWARE_VERSION = "KNXAnalyzerField-s3-analog-v0.8.0-field-campaign-v1";
 
 // Headless KNX Analyzer Field bring-up. Real ADC; no KNX bus, display, touch,
 // camera, microphone, or future UART is initialized in this milestone.
@@ -30,6 +30,12 @@ constexpr uint32_t ADC_TASK_STACK_BYTES = 4096;
 constexpr uint64_t SEGMENT_LIMIT = 512ULL * 1024ULL * 1024ULL;
 constexpr uint32_t CHECKPOINT_CHUNKS = 64;
 constexpr uint32_t INDEX_STRIDE_CHUNKS = 256;
+constexpr size_t FIELD_SITE_MAX_BYTES = 64;
+constexpr size_t FIELD_BUS_MAX_BYTES = 64;
+constexpr size_t FIELD_POINT_MAX_BYTES = 64;
+constexpr size_t FIELD_NOTE_MAX_BYTES = 160;
+constexpr uint64_t FIELD_SD_MARGIN_BYTES = 16ULL * 1024ULL * 1024ULL;
+constexpr const char *FIELD_CAMPAIGN_SCHEMA = "knx-field-campaign-1.0";
 #ifndef S3_WRITER_PRIORITY
 #define S3_WRITER_PRIORITY 2
 #endif
@@ -154,6 +160,14 @@ String jsonStringOrNull(const String &value) {
     else if (uint8_t(c) >= 0x20) out += c;
   }
   out += '"'; return out;
+}
+
+String fieldCampaignJson() {
+  return "{\"schema\":\"" + String(FIELD_CAMPAIGN_SCHEMA) + "\",\"site\":" +
+    jsonStringOrNull(pendingSiteLabel) + ",\"bus\":" + jsonStringOrNull(pendingBusLabel) +
+    ",\"point\":" + jsonStringOrNull(pendingMeasurementPoint) + ",\"note\":" +
+    jsonStringOrNull(pendingOperatorNote) + ",\"requested_duration_s\":" +
+    String(requestedDurationUs / 1000000ULL) + "}";
 }
 
 void updateCaptureMemoryMinima() {
@@ -923,14 +937,15 @@ void activateTimeReference(uint64_t monotonicOriginUs) {
 }
 
 bool startRun() {
-  if (!sdReady || (state.load() != State::IDLE && state.load() != State::CLOSED)) return false;
+  if (!sdReady || storageState.load() != StorageState::HEALTHY ||
+      (state.load() != State::IDLE && state.load() != State::CLOSED)) return false;
   if (captureMode == CaptureMode::EVENT && !calibration.valid()) return false;
   detection.d44Threshold = calibration.valid() ? calibration.validatedThreshold() : 0;
   detection.profile = calibration.valid() ? "AUTO_D44_V1" : "NONE";
   if (captureMode == CaptureMode::CONTINUOUS_RAW) {
     const uint64_t estimated = (requestedDurationUs / 1000000ULL + 1ULL) * SAMPLE_RATE * sizeof(uint16_t);
     const uint64_t freeBytes = SD.totalBytes() > SD.usedBytes() ? SD.totalBytes() - SD.usedBytes() : 0;
-    if (freeBytes < estimated + 16ULL * 1024ULL * 1024ULL) {
+    if (freeBytes < estimated + FIELD_SD_MARGIN_BYTES) {
       Serial.printf("{\"type\":\"START_REJECTED\",\"reason\":\"SD_SPACE\",\"estimated_raw_bytes\":\"%llu\",\"free_bytes\":\"%llu\"}\n", estimated, freeBytes);
       return false;
     }
@@ -961,6 +976,7 @@ bool startRun() {
   updateCaptureMemoryMinima();
   activateTimeReference(startedUs);
   String absoluteFields;
+  const String campaignFields = fieldCampaignJson();
   if (absoluteTimeValid) {
     absoluteFields = "\"start_unix_ms\":" + String(startUnixMs) + ",\"start_utc\":\"" + String(startUtc) +
       "\",\"browser_timezone_offset_min\":" + String(activeTimezoneOffsetMin);
@@ -984,7 +1000,7 @@ bool startRun() {
                  "\"calibration_adc_profile\":\"ADC1_CH0_12DB_12BIT_83333HZ\","
                  "\"calibration_adc_zero\":\"%llu\",\"calibration_adc_low16\":\"%llu\","
                  "\"calibration_adc_high4079\":\"%llu\",\"calibration_adc_max4095\":\"%llu\","
-                 "\"site_label\":%s,\"bus_label\":%s,\"measurement_point\":%s,\"operator_note\":%s,"
+                 "\"field_campaign\":%s,"
                  "\"calibrated_unix_ms\":null,\"time_schema_version\":\"1.0\","
                  "\"time_source\":\"%s\",\"absolute_time_valid\":%s,"
                  "%s,\"monotonic_origin_us\":\"%llu\",\"camera\":false,\"microphone\":false}\n",
@@ -995,9 +1011,7 @@ bool startRun() {
                  calibration.identityCrc(), calibration.confidence(), calibration.confidenceName(),
                  calibration.noiseUpper(), calibration.activityP10(), calibration.quietWindows(),
                  calibration.activeWindows(), calibration.bursts(), calibration.adcZero(), calibration.adcLow16(),
-                 calibration.adcHigh4079(), calibration.adcMax4095(), jsonStringOrNull(pendingSiteLabel).c_str(),
-                 jsonStringOrNull(pendingBusLabel).c_str(), jsonStringOrNull(pendingMeasurementPoint).c_str(),
-                 jsonStringOrNull(pendingOperatorNote).c_str(),
+                 calibration.adcHigh4079(), calibration.adcMax4095(), campaignFields.c_str(),
                  timeSourceName(activeTimeSource), absoluteTimeValid ? "true" : "false",
                  absoluteFields.c_str(), startedUs);
   session.flush(); session.close();
@@ -1154,12 +1168,15 @@ void finalizeRun() {
   }
   File manifest = SD.open(sessionDir + "/manifest.json", FILE_WRITE);
   if (manifest) {
+    const String campaignFields = fieldCampaignJson();
     manifest.printf("{\"schema_version\":\"knx-continuous-raw-manifest-1.0\",\"session_id\":\"%s\","
       "\"acquisition_mode\":\"%s\",\"sample_format\":\"uint16_le\",\"sample_rate_configured_hz\":%u,"
+      "\"field_campaign\":%s,"
       "\"session_duration_us\":\"%llu\",\"adc_capture_duration_us\":\"%llu\","
       "\"total_samples\":\"%llu\",\"total_raw_bytes\":\"%llu\",\"chunk_count\":\"%llu\","
       "\"chunk_crc\":\"CRC32_IEEE\",\"logical_raw_sha256\":\"%s\",\"gap_count\":%u,"
       "\"continuity_complete\":%s}\n", sessionDir.substring(1).c_str(), captureModeName(captureMode), SAMPLE_RATE,
+      campaignFields.c_str(),
       closedUs - startedUs, adcCaptureEndedUs - adcCaptureStartedUs,
       producedSamples.load(), rawBytes.load(), storedChunks, rawShaHex, gapCount.load(),
       (gapCount.load() == 0 && lostSamples.load() == 0 && invariantOk) ? "true" : "false");

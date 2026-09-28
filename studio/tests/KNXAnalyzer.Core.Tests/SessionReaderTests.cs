@@ -5,6 +5,52 @@ namespace KNXAnalyzer.Core.Tests;
 
 public class SessionReaderTests
 {
+    [Theory]
+    [InlineData("CONTINUOUS_RAW")]
+    [InlineData("EVENT")]
+    public void ReadsVersionedFieldCampaignMetadataForAllAcquisitionModes(string mode)
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "knxstudio-campaign-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try {
+            File.WriteAllText(Path.Combine(folder, "session-start.json"),
+                "{\"schema_version\":\"knx-long-session-1.1\",\"session_id\":\"campaign-test\",\"acquisition_mode\":\"" + mode +
+                "\",\"field_campaign\":{\"schema\":\"knx-field-campaign-1.0\",\"site\":\"Maison & Dépendance\",\"bus\":\"Ligne \\\"A\\\"\",\"point\":\"Tableau/Entrée\",\"note\":\"Mesure <terrain> — validation\",\"requested_duration_s\":300}}" );
+            File.WriteAllText(Path.Combine(folder, "test-result.json"), """{"lifecycle":"CLOSED","duration_us":"10000000"}""");
+            File.WriteAllText(Path.Combine(folder, "events.jsonl"), "");
+            File.WriteAllText(Path.Combine(folder, "chunks.jsonl"), "");
+
+            var session = EventRawV2Reader.OpenSession(folder);
+
+            Assert.Equal(mode, session.AcquisitionMode);
+            Assert.NotNull(session.Campaign);
+            Assert.Equal("knx-field-campaign-1.0", session.Campaign.Schema);
+            Assert.Equal("Maison & Dépendance", session.Campaign.Site);
+            Assert.Equal("Ligne \"A\"", session.Campaign.Bus);
+            Assert.Equal("Tableau/Entrée", session.Campaign.Point);
+            Assert.Equal("Mesure <terrain> — validation", session.Campaign.Note);
+            Assert.Equal((uint)300, session.Campaign.RequestedDurationSeconds);
+        } finally { Directory.Delete(folder, true); }
+    }
+
+    [Fact]
+    public void FieldCampaignIsOptionalAndEmptyValuesRemainEmpty()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "knxstudio-campaign-optional-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try {
+            File.WriteAllText(Path.Combine(folder, "session-start.json"), """{"session_id":"old-continuous","acquisition_mode":"CONTINUOUS_RAW"}""");
+            File.WriteAllText(Path.Combine(folder, "test-result.json"), """{"lifecycle":"CLOSED","duration_us":"10000000"}""");
+            File.WriteAllText(Path.Combine(folder, "events.jsonl"), ""); File.WriteAllText(Path.Combine(folder, "chunks.jsonl"), "");
+            Assert.Null(EventRawV2Reader.OpenSession(folder).Campaign);
+
+            File.WriteAllText(Path.Combine(folder, "session-start.json"), """{"session_id":"empty-campaign","acquisition_mode":"CONTINUOUS_RAW","field_campaign":{"schema":"knx-field-campaign-1.0","site":null,"bus":null,"point":null,"note":null,"requested_duration_s":10}}""");
+            var campaign = Assert.IsType<FieldCampaign>(EventRawV2Reader.OpenSession(folder).Campaign);
+            Assert.Null(campaign.Site); Assert.Null(campaign.Bus); Assert.Null(campaign.Point); Assert.Null(campaign.Note);
+            Assert.Equal((uint)10, campaign.RequestedDurationSeconds);
+        } finally { Directory.Delete(folder, true); }
+    }
+
     [Fact]
     public void ReadsBoundedContinuousRawRangeAndValidatesOnlyOverlappingChunks()
     {

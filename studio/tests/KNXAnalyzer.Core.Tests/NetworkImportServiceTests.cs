@@ -30,6 +30,14 @@ public class NetworkImportServiceTests
             Assert.Equal(expectedSamples, session.RawSampleEnd);
             Assert.Equal(expectedBytes, session.RawAvailableBytes);
             Assert.Equal(expectedChunks, session.RawChunks.Count);
+            if (Environment.GetEnvironmentVariable("KNX_ANALYZER_LIVE_FIELD_SITE") is { } expectedSite) {
+                Assert.NotNull(session.Campaign);
+                Assert.Equal(expectedSite, session.Campaign.Site);
+                Assert.Equal("Test Segment", session.Campaign.Bus);
+                Assert.Equal("Bench", session.Campaign.Point);
+                Assert.Equal("Field Campaign V1 validation", session.Campaign.Note);
+                Assert.Equal((uint)10, session.Campaign.RequestedDurationSeconds);
+            }
             ulong nextSample = 0;
             long mappedBytes = 0;
             foreach (var chunk in session.RawChunks.OrderBy(x => x.SampleStart))

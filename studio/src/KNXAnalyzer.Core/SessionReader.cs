@@ -4,6 +4,7 @@ using System.Text.Json;
 namespace KNXAnalyzer.Core;
 
 public sealed record Diagnostic(string File, int Line, string Message);
+public sealed record FieldCampaign(string Schema, string? Site, string? Bus, string? Point, string? Note, uint RequestedDurationSeconds);
 
 public sealed class Session
 {
@@ -22,6 +23,7 @@ public sealed class Session
     public uint PreTriggerSamples { get; set; }
     public uint PostTriggerSamples { get; set; }
     public string AcquisitionMode { get; set; } = "EVENT";
+    public FieldCampaign? Campaign { get; set; }
     public bool IsContinuousRaw => AcquisitionMode == "CONTINUOUS_RAW";
     public ulong? RawSampleStart => RawChunks.Count == 0 ? null : RawChunks.Min(x => x.SampleStart);
     public ulong? RawSampleEnd => RawChunks.Count == 0 ? null : RawChunks.Max(x => x.SampleEnd);
@@ -37,6 +39,9 @@ public sealed class Session
     public int Count(string classification) => Candidates.Count(x => x.Classification == classification);
     public int DisplayEventCount => Math.Max(EventCount, AnalogEvents.Count);
     public string RawAvailableText => RawAvailableBytes is long bytes ? FormatBytes(bytes) : "unknown";
+    public string CampaignSummary => Campaign is null ? "Field campaign: not specified"
+        : $"Site: {Display(Campaign.Site)}   Bus / Segment: {Display(Campaign.Bus)}   Measurement point: {Display(Campaign.Point)}   Requested duration: {Campaign.RequestedDurationSeconds} s\nNote: {Display(Campaign.Note)}";
+    private static string Display(string? value) => string.IsNullOrWhiteSpace(value) ? "—" : value;
     private static string FormatBytes(long bytes) => bytes < 1024 ? $"{bytes} B"
         : bytes < 1024 * 1024 ? $"{bytes / 1024.0:F1} KiB"
         : bytes < 1024L * 1024 * 1024 ? $"{bytes / (1024.0 * 1024):F1} MiB"
