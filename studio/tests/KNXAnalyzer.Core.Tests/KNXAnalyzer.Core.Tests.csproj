@@ -22,4 +22,8 @@
     <ProjectReference Include="..\..\src\KNXAnalyzer.Core\KNXAnalyzer.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="Fixtures\KNX-F35F14A4.zip" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

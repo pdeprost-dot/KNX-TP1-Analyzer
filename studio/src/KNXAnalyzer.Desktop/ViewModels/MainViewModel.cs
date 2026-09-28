@@ -82,9 +82,17 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty] private Tp1DecodeResult? selectedTp1Decode;
     [ObservableProperty] private bool showTp1Overlays = true;
     [ObservableProperty] private string offlineFrameTitle = "";
+    [ObservableProperty] private string offlineFrameControl = "—";
+    [ObservableProperty] private string offlineFramePriority = "—";
+    [ObservableProperty] private string offlineFrameFlags = "—";
     [ObservableProperty] private string offlineFrameSource = "—";
     [ObservableProperty] private string offlineFrameDestination = "—";
+    [ObservableProperty] private string offlineFrameTpci = "—";
+    [ObservableProperty] private string offlineFrameApci = "—";
     [ObservableProperty] private string offlineFrameService = "—";
+    [ObservableProperty] private string offlineFrameApdu = "—";
+    [ObservableProperty] private string offlineFramePayload = "—";
+    [ObservableProperty] private string offlineFrameLength = "—";
     [ObservableProperty] private string offlineFrameChecksum = "—";
     [ObservableProperty] private string offlineFrameParity = "—";
     [ObservableProperty] private string offlineFrameTiming = "—";
@@ -393,11 +401,27 @@ public partial class MainViewModel : ViewModelBase
             SelectedOfflineCharacter = OfflineCharacters.FirstOrDefault(x => !x.ParityValid || !x.TimingValid)
                 ?? OfflineCharacters.FirstOrDefault();
         }
-        OfflineFrameTitle = $"{value.RecordClassification} · {(value.KnownControl == Tp1KnownControl.None ? "record TP1" : value.KnownControl)}";
+        var parsed = value.ParseResult ?? (decodedRecord is null ? null : KnxTelegramDecoder.Parse(decodedRecord));
+        OfflineFrameTitle = parsed switch {
+            { Kind: KnxRecordKind.Telegram } => "KNX TELEGRAM",
+            { Kind: KnxRecordKind.BusControl, BusControl: { } control } => $"BUS CONTROL · {control.Type}",
+            _ => $"TP1 DIAGNOSTIC · {value.RecordClassification}"
+        };
         var notApplicable = value.KnownControl != Tp1KnownControl.None || value.RawHex.Length < 16;
-        OfflineFrameSource = value.Telegram?.Source ?? (notApplicable ? "Non applicable" : "Indisponible");
-        OfflineFrameDestination = value.Telegram?.Destination ?? (notApplicable ? "Non applicable" : "Indisponible");
-        OfflineFrameService = value.Telegram?.Service ?? (notApplicable ? "Non applicable" : "Indisponible");
+        var telegram = parsed?.Telegram;
+        OfflineFrameControl = telegram is null ? (parsed?.BusControl is { } bus ? $"0x{bus.Raw:X2}" : "Non applicable") : $"0x{telegram.Control:X2} · {telegram.Format}";
+        OfflineFramePriority = telegram?.Priority ?? "Non applicable";
+        OfflineFrameFlags = telegram is null ? "Non applicable" : $"Repeat: {telegram.Repeat} · System broadcast: {telegram.ControlField.SystemBroadcast}";
+        OfflineFrameSource = telegram?.Source ?? (notApplicable ? "Non applicable" : "Indisponible");
+        OfflineFrameDestination = telegram is null ? (notApplicable ? "Non applicable" : "Indisponible") :
+            telegram.GroupDestination is { } group ? $"{group.ThreeLevel} · raw 0x{group.Raw:X4} · 2-level {group.TwoLevel} (group)" :
+            $"{telegram.Destination} · raw 0x{telegram.IndividualDestination!.Value.Raw:X4} (individual)";
+        OfflineFrameTpci = telegram?.Transport.Name ?? "Non applicable";
+        OfflineFrameApci = telegram is null ? "Non applicable" : $"{telegram.ApplicationService.Display} · raw 0x{telegram.ApplicationService.Raw:X3}";
+        OfflineFrameService = telegram?.Service ?? parsed?.BusControl?.Type.ToString() ?? (notApplicable ? "Non applicable" : "Indisponible");
+        OfflineFrameApdu = telegram?.ApplicationData.ApduHex ?? "Non applicable";
+        OfflineFramePayload = telegram is null ? "Non applicable" : $"{telegram.ApplicationData.RawDisplay} · DPT Unknown";
+        OfflineFrameLength = telegram is null ? value.RawHex.Length / 2 + " byte(s)" : $"NPCI {telegram.Length} · record {telegram.RawBytes.Length} bytes";
         OfflineFrameChecksum = value.RawHex.Length < 16 ? "Non applicable" : value.ChecksumValid ? "Valide" : "Invalide";
         OfflineFrameParity = value.ParityErrors == 0 ? "Valide" : $"Invalide · {value.ParityErrors} erreur(s)";
         OfflineFrameTiming = $"{value.TimingRmsMicroseconds:F2} µs RMS · max {value.TimingMaxErrorMicroseconds:F2} µs";
@@ -417,6 +441,8 @@ public partial class MainViewModel : ViewModelBase
     {
         OfflineFrameTitle = "";
         OfflineCharacterDiagnostic = "Sélectionnez un caractère.";
-        OfflineFrameSource = OfflineFrameDestination = OfflineFrameService = OfflineFrameChecksum = OfflineFrameParity = OfflineFrameTiming = OfflineFrameRaw = "—";
+        OfflineFrameControl = OfflineFramePriority = OfflineFrameFlags = OfflineFrameSource = OfflineFrameDestination =
+            OfflineFrameTpci = OfflineFrameApci = OfflineFrameService = OfflineFrameApdu = OfflineFramePayload = OfflineFrameLength =
+            OfflineFrameChecksum = OfflineFrameParity = OfflineFrameTiming = OfflineFrameRaw = "—";
     }
 }

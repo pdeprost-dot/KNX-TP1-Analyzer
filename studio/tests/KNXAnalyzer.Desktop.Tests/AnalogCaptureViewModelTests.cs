@@ -32,6 +32,39 @@ public class AnalogCaptureViewModelTests
     }
 
     [Fact]
+    public void PresentsTelegramBusControlAndInvalidRecordWithoutInventingSemantics()
+    {
+        var vm = new MainViewModel();
+        var telegram = ParsedRecord("BCFF160001E10080CA", Tp1RecordClassification.VALID_UNKNOWN);
+        var ack = ParsedRecord("CC", Tp1RecordClassification.VALID_KNOWN, Tp1KnownControl.ACK);
+        var invalid = ParsedRecord("FFFFFFFFBDFFAF", Tp1RecordClassification.INVALID_PARITY);
+
+        vm.OfflineRecordResults.Add(telegram);
+        vm.OfflineRecordResults.Add(ack);
+        vm.OfflineRecordResults.Add(invalid);
+        vm.SelectedOfflineRecordFilter = "All";
+
+        vm.SelectedOfflineCandidate = telegram;
+        Assert.Equal("KNX TELEGRAM", vm.OfflineFrameTitle);
+        Assert.Contains("0xBC", vm.OfflineFrameControl);
+        Assert.Equal("15.15.22", vm.OfflineFrameSource);
+        Assert.Contains("0/0/1", vm.OfflineFrameDestination);
+        Assert.Equal("GroupValueWrite", vm.OfflineFrameService);
+        Assert.Equal("0080", vm.OfflineFrameApdu);
+        Assert.Contains("DPT Unknown", vm.OfflineFramePayload);
+
+        vm.SelectedOfflineCandidate = ack;
+        Assert.Contains("BUS CONTROL", vm.OfflineFrameTitle);
+        Assert.Equal("ACK", vm.OfflineFrameService);
+        Assert.Equal("Non applicable", vm.OfflineFrameSource);
+
+        vm.SelectedOfflineCandidate = invalid;
+        Assert.Contains("TP1 DIAGNOSTIC", vm.OfflineFrameTitle);
+        Assert.Equal("Non applicable", vm.OfflineFrameSource);
+        Assert.Equal("Non applicable", vm.OfflineFrameService);
+    }
+
+    [Fact]
     public void DistinguishesPendingRawAnalysisFromUnavailableData()
     {
         var item = new KNXAnalyzer.Core.AnalogEvent { EventId = 1, RawPersisted = true };
@@ -143,4 +176,19 @@ public class AnalogCaptureViewModelTests
             classification is Tp1RecordClassification.VALID_KNOWN or Tp1RecordClassification.VALID_UNKNOWN
                 ? OfflineAnalogClassification.TP1_VALID_FRAME : OfflineAnalogClassification.TP1_INVALID_PARITY,
             classification == Tp1RecordClassification.INVALID_PARITY ? 1 : 0, 0, true, 0, 0, null, [], classification, control);
+
+    private static OfflineTp1Candidate ParsedRecord(string raw, Tp1RecordClassification classification,
+        Tp1KnownControl control = Tp1KnownControl.None)
+    {
+        var bytes = Convert.FromHexString(raw);
+        var parsed = classification is Tp1RecordClassification.VALID_KNOWN or Tp1RecordClassification.VALID_UNKNOWN
+            ? KnxTelegramDecoder.Parse(bytes)
+            : new KnxTelegramParseResult(KnxTelegramParseStatus.Invalid, KnxRecordKind.InvalidTp1Record,
+                bytes, Reason: $"TP1 classification {classification}");
+        return new OfflineTp1Candidate(0, 100, 0, "negative", raw,
+            classification is Tp1RecordClassification.VALID_KNOWN or Tp1RecordClassification.VALID_UNKNOWN
+                ? OfflineAnalogClassification.TP1_VALID_FRAME : OfflineAnalogClassification.TP1_INVALID_PARITY,
+            classification == Tp1RecordClassification.INVALID_PARITY ? 1 : 0, 0, true, 0, 0,
+            parsed.Telegram, [], classification, control, parsed);
+    }
 }

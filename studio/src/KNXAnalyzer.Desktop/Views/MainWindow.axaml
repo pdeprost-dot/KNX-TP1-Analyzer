@@ -112,10 +112,9 @@
                     </StackPanel>
                     <ListBox Grid.Row="2" ItemsSource="{Binding OfflineCandidates}" SelectedItem="{Binding SelectedOfflineCandidate}">
                       <ListBox.ItemTemplate><DataTemplate>
-                        <Grid ColumnDefinitions="82,135,*" Margin="3">
+                        <Grid ColumnDefinitions="82,*" Margin="3">
                           <TextBlock Text="{Binding StartMilliseconds, StringFormat={}{0:F3} ms}"/>
-                          <TextBlock Grid.Column="1" Text="{Binding RecordClassification}"/>
-                          <TextBlock Grid.Column="2" Text="{Binding RawHex}" TextTrimming="CharacterEllipsis"/>
+                          <TextBlock Grid.Column="1" Text="{Binding DisplayLabel}" TextTrimming="CharacterEllipsis"/>
                         </Grid>
                       </DataTemplate></ListBox.ItemTemplate>
                     </ListBox>
@@ -129,14 +128,22 @@
                     <Border BorderBrush="DodgerBlue" BorderThickness="1" Padding="8">
                       <StackPanel Spacing="5">
                         <TextBlock Text="{Binding OfflineFrameTitle}" FontWeight="Bold" Foreground="DodgerBlue" TextWrapping="Wrap"/>
-                        <Grid ColumnDefinitions="105,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="3">
-                          <TextBlock Text="Source"/><TextBlock Grid.Column="1" Text="{Binding OfflineFrameSource}" FontWeight="SemiBold"/>
-                          <TextBlock Grid.Row="1" Text="Destination"/><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding OfflineFrameDestination}" FontWeight="SemiBold"/>
-                          <TextBlock Grid.Row="2" Text="Service"/><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding OfflineFrameService}" FontWeight="SemiBold"/>
-                          <TextBlock Grid.Row="3" Text="Parity"/><TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding OfflineFrameParity}" FontWeight="SemiBold"/>
-                          <TextBlock Grid.Row="4" Text="Checksum"/><TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding OfflineFrameChecksum}" FontWeight="SemiBold"/>
-                          <TextBlock Grid.Row="5" Text="Timing"/><TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding OfflineFrameTiming}" FontWeight="SemiBold"/>
-                          <TextBlock Grid.Row="6" Text="Octets RAW"/><TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding OfflineFrameRaw}" FontFamily="Consolas" TextWrapping="Wrap"/>
+                        <Grid ColumnDefinitions="105,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="3">
+                          <TextBlock Text="Control"/><TextBlock Grid.Column="1" Text="{Binding OfflineFrameControl}" FontWeight="SemiBold"/>
+                          <TextBlock Grid.Row="1" Text="Priority"/><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding OfflineFramePriority}"/>
+                          <TextBlock Grid.Row="2" Text="Flags"/><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding OfflineFrameFlags}" TextWrapping="Wrap"/>
+                          <TextBlock Grid.Row="3" Text="Source"/><TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding OfflineFrameSource}" FontWeight="SemiBold"/>
+                          <TextBlock Grid.Row="4" Text="Destination"/><TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding OfflineFrameDestination}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                          <TextBlock Grid.Row="5" Text="TPCI"/><TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding OfflineFrameTpci}"/>
+                          <TextBlock Grid.Row="6" Text="APCI"/><TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding OfflineFrameApci}" TextWrapping="Wrap"/>
+                          <TextBlock Grid.Row="7" Text="Service"/><TextBlock Grid.Row="7" Grid.Column="1" Text="{Binding OfflineFrameService}" FontWeight="SemiBold"/>
+                          <TextBlock Grid.Row="8" Text="APDU"/><TextBlock Grid.Row="8" Grid.Column="1" Text="{Binding OfflineFrameApdu}" FontFamily="Consolas"/>
+                          <TextBlock Grid.Row="9" Text="Payload / DPT"/><TextBlock Grid.Row="9" Grid.Column="1" Text="{Binding OfflineFramePayload}" TextWrapping="Wrap"/>
+                          <TextBlock Grid.Row="10" Text="Length"/><TextBlock Grid.Row="10" Grid.Column="1" Text="{Binding OfflineFrameLength}"/>
+                          <TextBlock Grid.Row="11" Text="Parity"/><TextBlock Grid.Row="11" Grid.Column="1" Text="{Binding OfflineFrameParity}"/>
+                          <TextBlock Grid.Row="12" Text="Checksum"/><TextBlock Grid.Row="12" Grid.Column="1" Text="{Binding OfflineFrameChecksum}"/>
+                          <TextBlock Grid.Row="13" Text="Timing"/><TextBlock Grid.Row="13" Grid.Column="1" Text="{Binding OfflineFrameTiming}"/>
+                          <TextBlock Grid.Row="14" Text="Octets RAW"/><TextBlock Grid.Row="14" Grid.Column="1" Text="{Binding OfflineFrameRaw}" FontFamily="Consolas" TextWrapping="Wrap"/>
                         </Grid>
                         <TextBlock Text="Décodée offline directement depuis les échantillons ADC." FontStyle="Italic" Opacity="0.75" TextWrapping="Wrap"/>
                       </StackPanel>

@@ -17,7 +17,15 @@ public sealed record OfflineTp1Candidate(
     int TimingErrors, bool ChecksumValid, double TimingRmsMicroseconds, double TimingMaxErrorMicroseconds,
     KnxTelegram? Telegram, IReadOnlyList<string> Reasons,
     Tp1RecordClassification RecordClassification = Tp1RecordClassification.ANALOG_UNDECODED,
-    Tp1KnownControl KnownControl = Tp1KnownControl.None);
+    Tp1KnownControl KnownControl = Tp1KnownControl.None,
+    KnxTelegramParseResult? ParseResult = null)
+{
+    public string DisplayLabel => ParseResult switch {
+        { Kind: KnxRecordKind.Telegram, Telegram: { } telegram } => $"Telegram | {telegram.Source} → {telegram.Destination} | {telegram.Service}",
+        { Kind: KnxRecordKind.BusControl, BusControl: { } control } => control.Type.ToString(),
+        _ => RecordClassification.ToString()
+    };
+}
 
 public sealed class AnalogAnalysis
 {
@@ -158,11 +166,12 @@ public static class OfflineRawAnalyzer
                 $"XOR checksum: {(record.ChecksumValid is null ? "not applicable" : record.ChecksumValid.Value ? "valid" : "invalid")}",
                 $"known control: {record.KnownControl}"
             };
+            var parsed = KnxTelegramDecoder.Parse(record);
             return new OfflineTp1Candidate(record.StartSample, record.EndSample,
                 1000.0 * (record.StartSample - stream.TriggerIndex) / stream.SampleRateHz,
                 "negative", record.RawHex, classification, record.ParityErrors, record.TimingErrors,
                 record.ChecksumValid == true, timingRms, timingMax, record.Telegram, reasons,
-                record.Classification, record.KnownControl);
+                record.Classification, record.KnownControl, parsed);
         }).ToArray();
 
 
