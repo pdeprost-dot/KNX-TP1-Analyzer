@@ -14,7 +14,7 @@
 #include "auto_calibration.h"
 
 #define S3_NETWORK_ENABLED 1
-constexpr const char *FIRMWARE_VERSION = "KNXAnalyzerField-s3-analog-v0.8.0-field-campaign-v1";
+constexpr const char *FIRMWARE_VERSION = "KNXAnalyzerField-s3-analog-v0.8.1-range-write-fix";
 
 // Headless KNX Analyzer Field bring-up. Real ADC; no KNX bus, display, touch,
 // camera, microphone, or future UART is initialized in this milestone.

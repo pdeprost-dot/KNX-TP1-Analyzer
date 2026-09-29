@@ -7,14 +7,26 @@ constexpr const char *API_VERSION = "1.0";
 static uint8_t transferBuffer[4096];
 uint64_t transferBytes = 0;
 uint32_t transferCount = 0, transferErrors = 0;
+uint64_t writeRequestedBytes = 0, writeAcceptedBytes = 0;
+uint32_t shortWrites = 0, zeroWrites = 0, writeTimeouts = 0;
 
 bool writeAll(WiFiClient &client, const uint8_t *data, size_t length) {
   size_t sent = 0; uint32_t noProgressSince = millis();
-  while (sent < length && client.connected()) {
-    const size_t written = client.write(data + sent, min<size_t>(1360, length - sent));
-    if (written) { sent += written; noProgressSince = millis(); }
-    else if (millis() - noProgressSince > 5000) return false;
-    else delay(1);
+  while (sent < length) {
+    const size_t requested = min<size_t>(1360, length - sent);
+    writeRequestedBytes += requested;
+    const size_t written = client.write(data + sent, requested);
+    writeAcceptedBytes += written;
+    if (written < requested) ++shortWrites;
+    if (written) {
+      sent += written; noProgressSince = millis();
+      // Let the Wi-Fi/TCP task drain its bounded TX queue before the next slice.
+      delay(1);
+    } else {
+      ++zeroWrites;
+      if (millis() - noProgressSince > 5000) { ++writeTimeouts; return false; }
+      delay(1);
+    }
   }
   return sent == length;
 }
@@ -125,7 +137,12 @@ void analyzer() {
     quote(stateName(state.load())) + ",\"ip\":" + quote(WiFi.localIP().toString()) +
     ",\"rssi\":" + String(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0) +
     ",\"sd_ready\":" + String(sdReady ? "true" : "false") +
-    ",\"ota_available\":" + String((state.load() == State::IDLE || state.load() == State::CLOSED) ? "true" : "false") + "}";
+    ",\"ota_available\":" + String((state.load() == State::IDLE || state.load() == State::CLOSED) ? "true" : "false") +
+    ",\"http_write_requested_bytes\":\"" + String(writeRequestedBytes) + "\"" +
+    ",\"http_write_accepted_bytes\":\"" + String(writeAcceptedBytes) + "\"" +
+    ",\"http_short_writes\":" + String(shortWrites) +
+    ",\"http_zero_writes\":" + String(zeroWrites) +
+    ",\"http_write_timeouts\":" + String(writeTimeouts) + "}";
   sendJson(200, json);
 }
 
