@@ -9,6 +9,9 @@ is not a development target.
 
 ## Product baselines
 
+- Product Baseline V1: `master` commit `1c8dac98b0d8f3c19a7c29b1f18c6f5d395bcd0f`.
+- Product tag: `knx-analyzer-product-baseline-v1`.
+
 ### Firmware
 
 - Validated commit: `c87d06552bef3e39a1fe1cad83e36041930d2104`.
@@ -17,10 +20,7 @@ is not a development target.
 - Image: `KNXAnalyzerField-s3-analog-v0.8.1-range-write-fix`.
 - ESP32-C6 is legacy reference material only.
 - `field-analyzer-v1` / `00ffc40c` remains immutable.
-
-Canonical XIAO FQBN:
-
-`esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=cdc,PartitionScheme=default_8MB,PSRAM=opi`
+Canonical XIAO FQBN: `esp32:esp32:XIAO_ESP32S3:USBMode=hwcdc,CDCOnBoot=cdc,PartitionScheme=default_8MB,PSRAM=opi`.
 
 ### Studio
 
@@ -115,28 +115,28 @@ Local RAW sessions and managed Corpus payloads are never committed to Git.
 
 - `feature/*` contains product work intended for consolidation.
 - `research/*` contains experimental evidence and is excluded by default.
-- Physical Decoder V2→V6 remains isolated at commit `71c81bd` and tag
-  `knx-analyzer-physical-decoder-research-v2-v6`.
+- Physical Decoder V2→V6 remains isolated at commit `71c81bd` and tag `knx-analyzer-physical-decoder-research-v2-v6`.
 - Experimental S3 benches are evidence, not product firmware.
 
-## Git rules
+## Development workflow
 
-- `master` is the consolidated validated product baseline.
-- Never force-push or rewrite validated tags.
-- Integrate validated feature branches through an explicit consolidation PR.
-- Preserve firmware and Studio histories; do not squash validated milestones.
-- One milestone has one measurable objective.
+- Read this file before starting work; use Git history and existing documentation instead of asking prompts to repeat project history.
+- Every product feature starts from `master`, the latest validated product baseline.
+- `feature/*` is product work; `research/*` is experimental work.
+- Work on one task with one measurable objective at a time.
 - No product checkpoint, release tag or merge to master before required automated and manual validation.
+- Update this file only when a milestone materially changes canonical project state.
+- Integrate validated feature branches without squashing their validated history.
+- Never force-push or rewrite validated tags.
 - Do not commit SDKs, `.validation`, generated binaries, caches or RAW sessions.
 - Firmware-only work must not modify Studio; Studio-only work must not modify firmware.
 - Research remains separate until explicitly promoted.
 
 ## Active roadmap
 
-1. Consolidate the validated firmware and Studio product baseline.
-2. Build a multi-site Continuous RAW field corpus.
-3. Perform comparative offline analysis across sites and front-ends.
-4. Only then resume physical TP1 decoder development.
+1. Build a multi-site Continuous RAW field corpus.
+2. Perform comparative offline analysis across sites and front-ends.
+3. Only then resume physical TP1 decoder development.
 
 ## Backlog
 
