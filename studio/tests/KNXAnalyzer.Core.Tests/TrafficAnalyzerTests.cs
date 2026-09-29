@@ -6,6 +6,23 @@ namespace KNXAnalyzer.Core.Tests;
 public class TrafficAnalyzerTests
 {
     [Fact]
+    public void OfflineAdapterIncludesOnlyValidSemanticTelegrams()
+    {
+        var valid = Offline("BCFF160001E10080CA", Tp1RecordClassification.VALID_UNKNOWN);
+        var ack = Offline("CC", Tp1RecordClassification.VALID_KNOWN, Tp1KnownControl.ACK);
+        var invalid = Offline("BCFF160001E10080CA", Tp1RecordClassification.INVALID_PARITY);
+        var raw = new RawCapture { EventId = 8, SampleRateHz = 83333, SampleStart = 3_000_000,
+            SampleEnd = 3_010_000, TriggerSample = 3_005_000, Samples = new ushort[10_000], CrcValid = true };
+
+        var observations = TrafficObservationSource.FromOfflineEvent("session", raw, [valid, ack, invalid]);
+
+        var observation = Assert.Single(observations);
+        Assert.Equal("15.15.22", observation.Telegram.Source);
+        Assert.Equal("0/0/1", observation.Telegram.Destination);
+        Assert.Equal("GroupValueWrite", observation.Telegram.Service);
+    }
+
+    [Fact]
     public void SeparatesSyntheticAndAggregatesParticipantsGroupsAndRecurringPairs()
     {
         using var metadata = JsonDocument.Parse("""{"session_id":"s"}""");
@@ -48,5 +65,19 @@ public class TrafficAnalyzerTests
         for (var i = 0; i < bytes.Length - 1; i++) checksum ^= bytes[i];
         bytes[^1] = checksum;
         return Convert.ToHexString(bytes);
+    }
+
+    private static OfflineTp1Candidate Offline(string raw, Tp1RecordClassification classification,
+        Tp1KnownControl knownControl = Tp1KnownControl.None)
+    {
+        var bytes = Convert.FromHexString(raw);
+        var parsed = classification is Tp1RecordClassification.VALID_KNOWN or Tp1RecordClassification.VALID_UNKNOWN
+            ? KnxTelegramDecoder.Parse(bytes)
+            : new KnxTelegramParseResult(KnxTelegramParseStatus.Invalid, KnxRecordKind.InvalidTp1Record, bytes);
+        return new OfflineTp1Candidate(100, 200, 0, "negative", raw,
+            classification is Tp1RecordClassification.VALID_KNOWN or Tp1RecordClassification.VALID_UNKNOWN
+                ? OfflineAnalogClassification.TP1_VALID_FRAME : OfflineAnalogClassification.TP1_INVALID_PARITY,
+            classification == Tp1RecordClassification.INVALID_PARITY ? 1 : 0, 0, classification != Tp1RecordClassification.INVALID_CHECKSUM,
+            0, 0, parsed.Telegram, [], classification, knownControl, parsed);
     }
 }

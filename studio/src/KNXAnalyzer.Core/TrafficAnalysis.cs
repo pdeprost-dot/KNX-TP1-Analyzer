@@ -2,6 +2,41 @@ namespace KNXAnalyzer.Core;
 
 public sealed record TrafficEndpoint(string Source, string Destination, string DestinationType, string Service, string ApduHex, string PayloadHex);
 
+public sealed record TrafficObservation(
+    string SessionId, long? MonotonicUs, KnxTelegram Telegram,
+    bool SyntheticTest = false, string? StableId = null);
+
+public static class TrafficObservationSource
+{
+    public static IEnumerable<TrafficObservation> FromSessions(IEnumerable<Session> sessions) =>
+        sessions.SelectMany(session => session.Candidates.Select(candidate =>
+            (Session: session, Candidate: candidate, Telegram: KnxTelegramDecoder.Decode(candidate))))
+            .Where(item => item.Telegram is not null)
+            .Select(item => new TrafficObservation(item.Session.Id, item.Candidate.MonotonicUs,
+                item.Telegram!, item.Candidate.SyntheticTest,
+                $"recorded:{item.Session.Id}:{item.Candidate.Line}"));
+
+    public static IReadOnlyList<TrafficObservation> FromOfflineEvent(
+        string sessionId, RawCapture capture, IEnumerable<OfflineTp1Candidate> records)
+    {
+        if (capture.SampleRateHz == 0) return [];
+        return records
+            .Where(record => record.RecordClassification is
+                Tp1RecordClassification.VALID_KNOWN or Tp1RecordClassification.VALID_UNKNOWN)
+            .Select(record => (Record: record, Parsed: record.ParseResult ??
+                KnxTelegramDecoder.Parse(Convert.FromHexString(record.RawHex))))
+            .Where(item => item.Parsed.Status == KnxTelegramParseStatus.Success &&
+                item.Parsed.Kind == KnxRecordKind.Telegram && item.Parsed.Telegram is not null)
+            .Select(item => {
+                var absoluteSample = checked(capture.SampleStart + (ulong)item.Record.StartSample);
+                var monotonicUs = checked((long)Math.Round(
+                    absoluteSample * 1_000_000.0 / capture.SampleRateHz));
+                return new TrafficObservation(sessionId, monotonicUs, item.Parsed.Telegram!,
+                    StableId: $"offline:{sessionId}:{absoluteSample}:{item.Record.RawHex}");
+            }).ToArray();
+    }
+}
+
 public sealed record ParticipantTraffic(
     string Address, int TelegramCount, int SessionCount,
     IReadOnlyList<TrafficCount> GroupDestinations, IReadOnlyList<TrafficCount> Services,
@@ -30,19 +65,22 @@ public sealed class TrafficAnalysis
 
 public static class TrafficAnalyzer
 {
-    private sealed record Item(string SessionId, Tp1Candidate Candidate, KnxTelegram Telegram)
+    private sealed record Item(string SessionId, long? MonotonicUs, KnxTelegram Telegram)
     {
         public TrafficEndpoint Endpoint => new(Telegram.Source, Telegram.Destination, Telegram.DestinationType,
             Telegram.Service, Telegram.ApduHex, Telegram.PayloadHex);
     }
 
     public static TrafficAnalysis Analyze(IEnumerable<Session> source, bool includeSynthetic = false,
+        TimeSpan? interactionWindow = null, int minimumOccurrences = 2) =>
+        Analyze(TrafficObservationSource.FromSessions(source), includeSynthetic, interactionWindow, minimumOccurrences);
+
+    public static TrafficAnalysis Analyze(IEnumerable<TrafficObservation> source, bool includeSynthetic = false,
         TimeSpan? interactionWindow = null, int minimumOccurrences = 2)
     {
-        var sessions = source.ToArray();
-        var all = sessions.SelectMany(s => s.Candidates.Select(c => new { Session = s, Candidate = c, Telegram = KnxTelegramDecoder.Decode(c) }))
-            .Where(x => x.Telegram is not null).Select(x => new Item(x.Session.Id, x.Candidate, x.Telegram!)).ToArray();
-        var selected = all.Where(x => includeSynthetic || !x.Candidate.SyntheticTest).ToArray();
+        var observations = source.ToArray();
+        var selectedObservations = observations.Where(x => includeSynthetic || !x.SyntheticTest).ToArray();
+        var selected = selectedObservations.Select(x => new Item(x.SessionId, x.MonotonicUs, x.Telegram)).ToArray();
         IReadOnlyList<TrafficCount> Counts(IEnumerable<string> values) => values.GroupBy(x => x)
             .Select(g => new TrafficCount(g.Key, g.Count())).OrderByDescending(x => x.Count).ThenBy(x => x.Value).ToArray();
 
@@ -64,9 +102,9 @@ public static class TrafficAnalyzer
         var windowUs = (long)(interactionWindow ?? TimeSpan.FromMilliseconds(100)).TotalMilliseconds * 1000;
         var pairs = new List<(TrafficEndpoint A, TrafficEndpoint B, string Session, double DelayMs)>();
         foreach (var session in selected.GroupBy(x => x.SessionId)) {
-            var ordered = session.Where(x => x.Candidate.MonotonicUs is not null).OrderBy(x => x.Candidate.MonotonicUs).ToArray();
+            var ordered = session.Where(x => x.MonotonicUs is not null).OrderBy(x => x.MonotonicUs).ToArray();
             for (var i = 0; i + 1 < ordered.Length; i++) {
-                var delay = ordered[i + 1].Candidate.MonotonicUs!.Value - ordered[i].Candidate.MonotonicUs!.Value;
+                var delay = ordered[i + 1].MonotonicUs!.Value - ordered[i].MonotonicUs!.Value;
                 if (delay >= 0 && delay <= windowUs)
                     pairs.Add((ordered[i].Endpoint, ordered[i + 1].Endpoint, session.Key, delay / 1000.0));
             }
@@ -81,8 +119,8 @@ public static class TrafficAnalyzer
             }).OrderByDescending(x => x.Occurrences).ThenByDescending(x => x.SessionCount).ThenBy(x => x.MedianDelayMs).ToArray();
 
         return new TrafficAnalysis {
-            ObservedTelegramCount = all.Count(x => !x.Candidate.SyntheticTest),
-            SyntheticTelegramCount = all.Count(x => x.Candidate.SyntheticTest),
+            ObservedTelegramCount = observations.Count(x => !x.SyntheticTest),
+            SyntheticTelegramCount = observations.Count(x => x.SyntheticTest),
             Participants = participants, Groups = groups, Interactions = interactions
         };
     }
