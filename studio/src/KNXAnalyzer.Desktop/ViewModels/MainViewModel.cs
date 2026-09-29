@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using KNXAnalyzer.Core;
@@ -13,6 +14,7 @@ namespace KNXAnalyzer.Desktop.ViewModels;
 public partial class MainViewModel : ViewModelBase
 {
     private NetworkImportService? networkImport;
+    private int networkOperationBusy;
     public ObservableCollection<Session> Sessions { get; } = [];
     public ObservableCollection<NetworkSessionInfo> NetworkSessions { get; } = [];
     public ObservableCollection<Tp1Candidate> VisibleCandidates { get; } = [];
@@ -111,6 +113,10 @@ public partial class MainViewModel : ViewModelBase
     }
     public async Task OpenNetworkAsync()
     {
+        if (Interlocked.Exchange(ref networkOperationBusy, 1) != 0) {
+            Status = "Network operation already in progress.";
+            return;
+        }
         try {
             Status = "Network: discovery / Analyzer API..."; NetworkProgress = "metadata";
             networkImport?.Dispose(); networkImport = new NetworkImportService(NetworkHost);
@@ -122,16 +128,22 @@ public partial class MainViewModel : ViewModelBase
             FolderPath = $"NETWORK {networkImport.BaseUri}";
             NetworkProgress = "session list ready"; Status = $"{NetworkSessions.Count} network session(s). Select one, then import metadata.";
         } catch (Exception e) { Status = $"Network import: {e.Message}"; NetworkProgress = "error"; }
+        finally { Volatile.Write(ref networkOperationBusy, 0); }
     }
     public async Task ImportSelectedNetworkSessionAsync()
     {
         if (networkImport is null || SelectedNetworkSession is null) return;
+        if (Interlocked.Exchange(ref networkOperationBusy, 1) != 0) {
+            Status = "Network operation already in progress.";
+            return;
+        }
         try {
             var progress = new Progress<NetworkImportProgress>(x => NetworkProgress = x.FromCache ? $"cache · {x.Stage}" : x.Total is long total ? $"{x.Stage} · {x.Downloaded}/{total}" : x.Stage);
             var session = await networkImport.ImportMetadataAsync(SelectedNetworkSession, progress);
             Sessions.Clear(); Sessions.Add(session); RefreshTrafficAnalysis(); SelectedSession = session;
             NetworkProgress = "metadata validated"; Status = "Session imported. Event RAW will be fetched and CRC-checked on demand.";
         } catch (Exception e) { Status = $"Network import: {e.Message}"; NetworkProgress = "error"; }
+        finally { Volatile.Write(ref networkOperationBusy, 0); }
     }
     private void RefreshTrafficAnalysis()
     {

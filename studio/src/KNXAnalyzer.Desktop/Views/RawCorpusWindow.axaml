@@ -1,0 +1,39 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:KNXAnalyzer.Desktop.ViewModels" x:Class="KNXAnalyzer.Desktop.Views.RawCorpusWindow"
+        x:DataType="vm:RawCorpusViewModel" Title="KNX Analyzer Studio — RAW Corpus" Width="1450" Height="850" MinWidth="950" MinHeight="600">
+  <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="12" RowSpacing="8">
+    <DockPanel Grid.Row="0">
+      <Button DockPanel.Dock="Right" Content="Import session folder…" Click="ImportClicked" Margin="8,0,0,0"/>
+      <CheckBox DockPanel.Dock="Right" Content="Managed copy (recommended)" IsChecked="{Binding ManagedCopy}" VerticalAlignment="Center"/>
+      <TextBlock Text="RAW Corpus" FontSize="22" FontWeight="Bold" VerticalAlignment="Center"/>
+    </DockPanel>
+    <Grid Grid.Row="1" ColumnDefinitions="2*,*,*,*,180" ColumnSpacing="8">
+      <TextBox PlaceholderText="Free text" Text="{Binding TextFilter}"/>
+      <TextBox Grid.Column="1" PlaceholderText="Site" Text="{Binding SiteFilter}"/>
+      <TextBox Grid.Column="2" PlaceholderText="Bus" Text="{Binding BusFilter}"/>
+      <TextBox Grid.Column="3" PlaceholderText="Point" Text="{Binding PointFilter}"/>
+      <ComboBox Grid.Column="4" ItemsSource="{Binding IntegrityFilters}" SelectedItem="{Binding IntegrityFilter}"/>
+    </Grid>
+    <Grid Grid.Row="2" ColumnDefinitions="3*,6,2*">
+      <Grid RowDefinitions="Auto,*">
+        <Grid ColumnDefinitions="150,145,110,110,110,95,110,130,105,*" Margin="6">
+          <TextBlock Text="Session" FontWeight="Bold"/><TextBlock Grid.Column="1" Text="Date" FontWeight="Bold"/><TextBlock Grid.Column="2" Text="Site" FontWeight="Bold"/><TextBlock Grid.Column="3" Text="Bus" FontWeight="Bold"/><TextBlock Grid.Column="4" Text="Point" FontWeight="Bold"/><TextBlock Grid.Column="5" Text="Duration" FontWeight="Bold"/><TextBlock Grid.Column="6" Text="Sample rate" FontWeight="Bold"/><TextBlock Grid.Column="7" Text="Samples" FontWeight="Bold"/><TextBlock Grid.Column="8" Text="RAW" FontWeight="Bold"/><TextBlock Grid.Column="9" Text="Integrity" FontWeight="Bold"/>
+        </Grid>
+        <ListBox Grid.Row="1" ItemsSource="{Binding Entries}" SelectedItem="{Binding SelectedEntry}"><ListBox.ItemTemplate><DataTemplate>
+          <Grid ColumnDefinitions="150,145,110,110,110,95,110,130,105,*" Margin="4">
+            <TextBlock Text="{Binding Session}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{Binding Date}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="2" Text="{Binding Site}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="3" Text="{Binding Bus}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="4" Text="{Binding Point}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="5" Text="{Binding Duration}"/><TextBlock Grid.Column="6" Text="{Binding Rate}"/><TextBlock Grid.Column="7" Text="{Binding Samples}"/><TextBlock Grid.Column="8" Text="{Binding RawSize}"/><TextBlock Grid.Column="9" Text="{Binding Integrity}"/>
+          </Grid>
+        </DataTemplate></ListBox.ItemTemplate></ListBox>
+      </Grid>
+      <GridSplitter Grid.Column="1" Width="6" ResizeDirection="Columns"/>
+      <Grid Grid.Column="2" RowDefinitions="*,Auto,Auto,Auto,Auto" RowSpacing="6">
+        <ScrollViewer><TextBlock Text="{Binding Details}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
+        <TextBox Grid.Row="1" PlaceholderText="Local alias" Text="{Binding LocalAlias}"/>
+        <TextBox Grid.Row="2" PlaceholderText="Laboratory comment" Text="{Binding LocalComment}" AcceptsReturn="True" MinHeight="60"/>
+        <TextBox Grid.Row="3" PlaceholderText="Tags, comma separated" Text="{Binding LocalTags}"/>
+        <StackPanel Grid.Row="4" Orientation="Horizontal" Spacing="8"><Button Content="Save local metadata" Click="SaveMetadataClicked"/><Button Content="Open / Analyze" Click="OpenSelectedClicked"/><Button Content="Open Folder" Click="OpenFolderClicked"/></StackPanel>
+      </Grid>
+    </Grid>
+    <TextBlock Grid.Row="3" Text="{Binding Status}" TextWrapping="Wrap"/>
+  </Grid>
+</Window>

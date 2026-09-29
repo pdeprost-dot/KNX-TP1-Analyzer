@@ -1,0 +1,18 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="using:KNXAnalyzer.Desktop.Views"
+        x:Class="KNXAnalyzer.Desktop.Views.ContinuousRawViewerWindow" Title="Continuous RAW Viewer" Width="1400" Height="800" MinWidth="850" MinHeight="520">
+  <Grid RowDefinitions="Auto,*,Auto,Auto" Margin="12" RowSpacing="8">
+    <DockPanel>
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8"><Button Content="Fit All" Click="FitClicked"/><Button Content="Open Folder" Click="OpenFolderClicked"/></StackPanel>
+      <StackPanel><TextBlock x:Name="TitleText" FontSize="21" FontWeight="Bold"/><TextBlock x:Name="SummaryText" Opacity="0.75"/></StackPanel>
+    </DockPanel>
+    <Border Grid.Row="1" BorderBrush="Gray" BorderThickness="1"><local:ContinuousRawPlotView x:Name="Plot"/></Border>
+    <Grid Grid.Row="2" ColumnDefinitions="*,*" ColumnSpacing="12">
+      <TextBlock x:Name="ViewportText" TextWrapping="Wrap"/>
+      <TextBlock Grid.Column="1" x:Name="CursorText" TextWrapping="Wrap"/>
+    </Grid>
+    <Grid Grid.Row="3" ColumnDefinitions="*,*" ColumnSpacing="12">
+      <TextBlock Text="Wheel: zoom · Drag: pan · Shift+drag: select · Double-click: Fit All" Opacity="0.7"/>
+      <TextBlock Grid.Column="1" x:Name="SelectionText" Text="Selection: none" TextWrapping="Wrap"/>
+    </Grid>
+  </Grid>
+</Window>

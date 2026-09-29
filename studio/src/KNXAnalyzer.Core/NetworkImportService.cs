@@ -28,7 +28,8 @@ public sealed record NetworkSessionInfo(
     [property: JsonPropertyName("calibration_crc")] string? CalibrationCrc = null,
     [property: JsonPropertyName("threshold")] int? Threshold = null,
     [property: JsonPropertyName("confidence")] string? Confidence = null,
-    [property: JsonPropertyName("acquisition_mode")] string? AcquisitionMode = null)
+    [property: JsonPropertyName("acquisition_mode")] string? AcquisitionMode = null,
+    [property: JsonPropertyName("has_session_start")] bool? HasSessionStart = null)
 {
     public string DisplayName => $"{(string.IsNullOrWhiteSpace(StartUtc) ? "UNSYNCED" : StartUtc)}  ·  {SessionId}  ·  {State}/{CompletionStatus}";
 }
@@ -67,7 +68,8 @@ public sealed class NetworkImportService : IDisposable
     public async Task<IReadOnlyList<NetworkSessionInfo>> ListSessionsAsync(CancellationToken ct = default)
     {
         using var doc = await GetDocumentAsync("api/v1/sessions", ct);
-        return doc.RootElement.GetProperty("sessions").Deserialize<NetworkSessionInfo[]>() ?? [];
+        var sessions = doc.RootElement.GetProperty("sessions").Deserialize<NetworkSessionInfo[]>() ?? [];
+        return sessions.Where(x => x.HasSessionStart is not false).ToArray();
     }
 
     public async Task<Session> ImportMetadataAsync(NetworkSessionInfo info, IProgress<NetworkImportProgress>? progress = null, CancellationToken ct = default)
@@ -95,7 +97,9 @@ public sealed class NetworkImportService : IDisposable
                         progress?.Report(new("downloaded", received, received));
                     }
                 } else {
-                    await WriteJsonAsync(Path.Combine(staging, "session-start.json"), manifest.RootElement.GetProperty("session_start"), ct);
+                    if (!manifest.RootElement.TryGetProperty("session_start", out var sessionStart) || sessionStart.ValueKind != JsonValueKind.Object)
+                        throw new InvalidDataException($"Session {info.Folder} has no usable session_start metadata.");
+                    await WriteJsonAsync(Path.Combine(staging, "session-start.json"), sessionStart, ct);
                     if (manifest.RootElement.TryGetProperty("test_result", out var result) && result.ValueKind == JsonValueKind.Object)
                         await WriteJsonAsync(Path.Combine(staging, "test-result.json"), result, ct);
                     var files = manifest.RootElement.GetProperty("files");
