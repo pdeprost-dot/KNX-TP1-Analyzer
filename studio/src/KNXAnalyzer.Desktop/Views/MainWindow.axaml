@@ -3,8 +3,13 @@
         x:DataType="vm:MainViewModel" Title="KNX TP1 Analyzer Studio" Width="1400" Height="850" MinWidth="950" MinHeight="600">
   <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" Margin="12" RowSpacing="8">
     <DockPanel Grid.Row="0" LastChildFill="True">
+      <Button DockPanel.Dock="Right" Content="RAW Corpus" Click="RawCorpusClicked" Margin="8,0,0,0" />
       <Button DockPanel.Dock="Right" Content="Open SD / Sessions Folder" Click="OpenClicked" Margin="8,0,0,0" />
       <Button DockPanel.Dock="Right" Content="Network" Click="NetworkClicked" Margin="8,0,0,0" />
+      <Button DockPanel.Dock="Right" Content="Import selected" Click="ImportNetworkSessionClicked" Margin="8,0,0,0" />
+      <ComboBox DockPanel.Dock="Right" Width="360" ItemsSource="{Binding NetworkSessions}" SelectedItem="{Binding SelectedNetworkSession}">
+        <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis"/></DataTemplate></ComboBox.ItemTemplate>
+      </ComboBox>
       <TextBox DockPanel.Dock="Right" Width="220" Text="{Binding NetworkHost}" PlaceholderText="Analyzer hostname / IP" />
       <Button DockPanel.Dock="Right" Content="Générer lot complet" Click="BatchClicked" Margin="8,0,0,0" />
       <Button DockPanel.Dock="Right" Content="Export JSON" Click="ExportJsonClicked" Margin="8,0,0,0" />
@@ -47,97 +52,132 @@
             </Grid>
           </TabItem>
           <TabItem Header="Events / Timeline">
-            <Grid ColumnDefinitions="560,*" ColumnSpacing="8">
+            <Grid ColumnDefinitions="480,*" ColumnSpacing="8">
               <Grid RowDefinitions="Auto,Auto,*" RowSpacing="5">
                 <ComboBox ItemsSource="{Binding AnalogSortOptions}" SelectedItem="{Binding SelectedAnalogSort}" HorizontalAlignment="Left" MinWidth="180"/>
-                <Grid Grid.Row="1" ColumnDefinitions="55,110,*,105,80" Margin="7">
-                  <TextBlock Text="Event"/><TextBlock Grid.Column="1" Text="Position"/><TextBlock Grid.Column="2" Text="Type / metadata"/>
-                  <TextBlock Grid.Column="3" Text="RAW window"/><TextBlock Grid.Column="4" Text="CRC"/>
+                <Grid Grid.Row="1" ColumnDefinitions="45,92,95,75,55,65,55" Margin="7">
+                  <TextBlock Text="Event"/><TextBlock Grid.Column="1" Text="Position"/><TextBlock Grid.Column="2" Text="Duration"/>
+                  <TextBlock Grid.Column="3" Text="Samples"/><TextBlock Grid.Column="4" Text="Chunks"/>
+                  <TextBlock Grid.Column="5" Text="D44 max"/><TextBlock Grid.Column="6" Text="CRC"/>
                 </Grid>
                 <ListBox Grid.Row="2" ItemsSource="{Binding AnalogEvents}" SelectedItem="{Binding SelectedAnalogEvent}">
                   <ListBox.ItemTemplate><DataTemplate>
-                    <Grid ColumnDefinitions="55,110,*,105,80" Margin="3">
+                    <Grid ColumnDefinitions="45,92,95,75,55,65,55" Margin="3">
                       <TextBlock Text="{Binding EventId}"/><TextBlock Grid.Column="1" Text="{Binding PositionText}"/>
-                      <TextBlock Grid.Column="2" Text="{Binding Kind}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="3" Text="{Binding WindowText}"/>
-                      <TextBlock Grid.Column="4" Text="{Binding CrcText}"/>
+                      <TextBlock Grid.Column="2" Text="{Binding DurationText}"/><TextBlock Grid.Column="3" Text="{Binding WindowText}"/>
+                      <TextBlock Grid.Column="4" Text="{Binding ChunkCountText}"/><TextBlock Grid.Column="5" Text="{Binding D44MaximumText}"/>
+                      <TextBlock Grid.Column="6" Text="{Binding CrcText}"/>
                     </Grid>
                   </DataTemplate></ListBox.ItemTemplate>
                 </ListBox>
               </Grid>
-              <Grid Grid.Column="1" RowDefinitions="Auto,220,Auto,Auto,Auto,Auto,*" RowSpacing="8">
-                <StackPanel Orientation="Horizontal" Spacing="12">
-                  <Button Content="Reset / Fit" Click="ResetWaveformClicked"/>
-                  <TextBlock Text="Wheel: time zoom  •  Drag: pan  •  Ctrl+wheel: Y zoom  •  Double-click: fit" VerticalAlignment="Center"/>
+              <Grid Grid.Column="1" ColumnDefinitions="*,340" ColumnSpacing="8">
+              <Grid RowDefinitions="Auto,*,*,Auto,Auto,Auto" RowSpacing="6">
+                <StackPanel Spacing="4">
+                  <StackPanel Orientation="Horizontal" Spacing="12">
+                    <Button Content="Previous Event" Click="PreviousEventClicked"/>
+                    <Button Content="Next Event" Click="NextEventClicked"/>
+                    <Button Content="Fit Event" Click="ResetWaveformClicked"/>
+                    <CheckBox Content="TP1 overlays" IsChecked="{Binding ShowTp1Overlays}" VerticalAlignment="Center"/>
+                    <TextBlock Text="Wheel: time zoom  •  Drag: pan  •  Ctrl+wheel: Y zoom  •  Double-click: fit" VerticalAlignment="Center"/>
+                  </StackPanel>
+                  <TextBlock Text="{Binding EventViewerSummary}" FontWeight="SemiBold" TextWrapping="Wrap"/>
                 </StackPanel>
                 <Border Grid.Row="1" BorderBrush="Gray" BorderThickness="1">
-                  <views:WaveformView x:Name="Waveform" Capture="{Binding SelectedCapture}"/>
+                  <views:WaveformView x:Name="Waveform" Capture="{Binding SelectedCapture}" Decode="{Binding SelectedTp1Decode}" SelectedRecord="{Binding SelectedOfflineCandidate}" ShowTp1Overlays="{Binding ShowTp1Overlays}"/>
                 </Border>
-                <Grid Grid.Row="2" ColumnDefinitions="65,*,80" ColumnSpacing="8">
+                <Border Grid.Row="2" BorderBrush="Gray" BorderThickness="1">
+                  <views:WaveformView x:Name="D44Waveform" D44Mode="True" Capture="{Binding SelectedCapture}" Decode="{Binding SelectedTp1Decode}" SelectedRecord="{Binding SelectedOfflineCandidate}" ShowTp1Overlays="{Binding ShowTp1Overlays}"/>
+                </Border>
+                <Grid Grid.Row="3" ColumnDefinitions="65,*,80" ColumnSpacing="8">
                   <TextBlock Text="Zoom" VerticalAlignment="Center"/>
                   <Slider x:Name="ZoomSlider" Grid.Column="1" Minimum="0" Maximum="1" ValueChanged="ZoomSliderChanged"/>
-                  <ComboBox x:Name="AnalogUnit" Grid.Column="2" SelectionChanged="AnalogUnitChanged" SelectedIndex="0">
+                  <ComboBox x:Name="AnalogUnit" Grid.Column="2" SelectionChanged="AnalogUnitChanged" SelectedIndex="1">
                     <ComboBoxItem Content="Estimated mV"/><ComboBoxItem Content="RAW"/>
                   </ComboBox>
                 </Grid>
-                <Grid Grid.Row="3" ColumnDefinitions="65,*" ColumnSpacing="8">
+                <Grid Grid.Row="4" ColumnDefinitions="65,*" ColumnSpacing="8">
                   <TextBlock Text="Position" VerticalAlignment="Center"/>
                   <Slider x:Name="PositionSlider" Grid.Column="1" Minimum="0" Maximum="1" ValueChanged="PositionSliderChanged"/>
                 </Grid>
-                <TextBlock Grid.Row="4" Text="{Binding AnalogAxis}" TextWrapping="Wrap"/>
-                <TextBlock Grid.Row="5" Text="{Binding AnalogVariationNotice}" FontWeight="Bold"/>
-                <Grid Grid.Row="6" ColumnDefinitions="3*,2*" ColumnSpacing="12">
-                  <Grid RowDefinitions="Auto,Auto,Auto,Auto,*" RowSpacing="6">
-                    <TextBlock Text="ANALYSE OFFLINE RAW" FontWeight="Bold" FontSize="15"/>
-                    <TextBlock Grid.Row="1" Text="{Binding OfflineAnalysisSummary}" TextWrapping="Wrap" Opacity="0.75"/>
-                    <StackPanel Grid.Row="2" Spacing="4">
-                      <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock Text="Profil de décodage" VerticalAlignment="Center" FontWeight="SemiBold"/>
-                        <ComboBox ItemsSource="{Binding OfflineProfiles}" SelectedItem="{Binding SelectedOfflineProfile}" MinWidth="225">
-                          <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding DisplayName}"/></DataTemplate></ComboBox.ItemTemplate>
-                        </ComboBox>
-                      </StackPanel>
-                      <TextBlock Text="{Binding OfflineProfileComparison}" TextWrapping="Wrap" FontSize="11" Opacity="0.8"/>
+                <StackPanel Grid.Row="5"><TextBlock Text="{Binding AnalogAxis}" TextWrapping="Wrap"/><TextBlock Text="{Binding AnalogCursor}" FontFamily="Consolas"/><TextBlock Text="{Binding AnalogVariationNotice}" FontWeight="Bold"/></StackPanel>
+              </Grid>
+              <Grid Grid.Column="1" RowDefinitions="Auto,Auto,*,Auto,300" RowSpacing="6">
+                    <TextBlock Text="TP1 RECORDS" FontWeight="Bold" FontSize="15"/>
+                    <StackPanel Grid.Row="1" Spacing="5">
+                      <ComboBox ItemsSource="{Binding OfflineProfiles}" SelectedItem="{Binding SelectedOfflineProfile}" MinWidth="225">
+                        <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding DisplayName}"/></DataTemplate></ComboBox.ItemTemplate>
+                      </ComboBox>
+                      <ComboBox ItemsSource="{Binding OfflineRecordFilters}" SelectedItem="{Binding SelectedOfflineRecordFilter}"/>
+                      <TextBlock Text="{Binding OfflineAnalysisSummary}" TextWrapping="Wrap" FontSize="11" Opacity="0.75"/>
                     </StackPanel>
-                    <Grid Grid.Row="3" ColumnDefinitions="Auto,90,Auto,100,Auto,90" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="3" Margin="0,4">
-                      <TextBlock Text="Échantillons"/><TextBlock Grid.Column="1" Text="{Binding OfflineSampleCount}" FontWeight="SemiBold"/>
-                      <TextBlock Grid.Column="2" Text="Durée"/><TextBlock Grid.Column="3" Text="{Binding OfflineDuration}" FontWeight="SemiBold"/>
-                      <TextBlock Grid.Column="4" Text="Activité"/><TextBlock Grid.Column="5" Text="{Binding OfflineActivity}" FontWeight="SemiBold"/>
-                      <TextBlock Grid.Row="1" Text="Niveau de repos"/><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding OfflineBaseline}" FontWeight="SemiBold"/>
-                      <TextBlock Grid.Row="1" Grid.Column="2" Text="Bruit RMS"/><TextBlock Grid.Row="1" Grid.Column="3" Text="{Binding OfflineNoiseRms}" FontWeight="SemiBold"/>
-                      <TextBlock Grid.Row="1" Grid.Column="4" Text="Impulsions TP1"/><TextBlock Grid.Row="1" Grid.Column="5" Text="{Binding OfflinePulseCount}" FontWeight="SemiBold"/>
-                      <TextBlock Grid.Row="2" Text="Candidats"/><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding OfflineCandidateCount}" FontWeight="SemiBold"/>
-                      <TextBlock Grid.Row="2" Grid.Column="2" Text="Trames valides"/><TextBlock Grid.Row="2" Grid.Column="3" Text="{Binding OfflineValidFrameCount}" FontWeight="SemiBold"/>
-                    </Grid>
-                    <ListBox Grid.Row="4" ItemsSource="{Binding OfflineCandidates}" SelectedItem="{Binding SelectedOfflineCandidate}">
+                    <ListBox Grid.Row="2" ItemsSource="{Binding OfflineCandidates}" SelectedItem="{Binding SelectedOfflineCandidate}">
                       <ListBox.ItemTemplate><DataTemplate>
-                        <Grid ColumnDefinitions="90,155,*" Margin="3">
+                        <Grid ColumnDefinitions="82,*" Margin="3">
                           <TextBlock Text="{Binding StartMilliseconds, StringFormat={}{0:F3} ms}"/>
-                          <TextBlock Grid.Column="1" Text="{Binding Classification}"/>
-                          <TextBlock Grid.Column="2" Text="{Binding RawHex}" TextTrimming="CharacterEllipsis"/>
+                          <TextBlock Grid.Column="1" Text="{Binding DisplayLabel}" TextTrimming="CharacterEllipsis"/>
                         </Grid>
                       </DataTemplate></ListBox.ItemTemplate>
                     </ListBox>
-                  </Grid>
-                  <Grid Grid.Column="1" RowDefinitions="Auto,Auto,*" RowSpacing="6">
-                    <Border BorderBrush="DodgerBlue" BorderThickness="1" Padding="10">
+                    <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="8">
+                      <Button Content="Previous Record" Click="PreviousRecordClicked"/>
+                      <Button Content="Next Record" Click="NextRecordClicked"/>
+                      <Button Content="Fit Event" Click="ResetWaveformClicked"/>
+                    </StackPanel>
+                    <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto">
+                    <StackPanel Spacing="6">
+                    <Border BorderBrush="DodgerBlue" BorderThickness="1" Padding="8">
                       <StackPanel Spacing="5">
                         <TextBlock Text="{Binding OfflineFrameTitle}" FontWeight="Bold" Foreground="DodgerBlue" TextWrapping="Wrap"/>
-                        <Grid ColumnDefinitions="105,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="3">
-                          <TextBlock Text="Source"/><TextBlock Grid.Column="1" Text="{Binding OfflineFrameSource}" FontWeight="SemiBold"/>
-                          <TextBlock Grid.Row="1" Text="Destination"/><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding OfflineFrameDestination}" FontWeight="SemiBold"/>
-                          <TextBlock Grid.Row="2" Text="Service"/><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding OfflineFrameService}" FontWeight="SemiBold"/>
-                          <TextBlock Grid.Row="3" Text="Parity"/><TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding OfflineFrameParity}" FontWeight="SemiBold"/>
-                          <TextBlock Grid.Row="4" Text="Checksum"/><TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding OfflineFrameChecksum}" FontWeight="SemiBold"/>
-                          <TextBlock Grid.Row="5" Text="Timing"/><TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding OfflineFrameTiming}" FontWeight="SemiBold"/>
-                          <TextBlock Grid.Row="6" Text="Octets RAW"/><TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding OfflineFrameRaw}" FontFamily="Consolas" TextWrapping="Wrap"/>
+                        <Grid ColumnDefinitions="105,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="3">
+                          <TextBlock Text="Control"/><TextBlock Grid.Column="1" Text="{Binding OfflineFrameControl}" FontWeight="SemiBold"/>
+                          <TextBlock Grid.Row="1" Text="Priority"/><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding OfflineFramePriority}"/>
+                          <TextBlock Grid.Row="2" Text="Flags"/><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding OfflineFrameFlags}" TextWrapping="Wrap"/>
+                          <TextBlock Grid.Row="3" Text="Source"/><TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding OfflineFrameSource}" FontWeight="SemiBold"/>
+                          <TextBlock Grid.Row="4" Text="Destination"/><TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding OfflineFrameDestination}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                          <TextBlock Grid.Row="5" Text="TPCI"/><TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding OfflineFrameTpci}"/>
+                          <TextBlock Grid.Row="6" Text="APCI"/><TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding OfflineFrameApci}" TextWrapping="Wrap"/>
+                          <TextBlock Grid.Row="7" Text="Service"/><TextBlock Grid.Row="7" Grid.Column="1" Text="{Binding OfflineFrameService}" FontWeight="SemiBold"/>
+                          <TextBlock Grid.Row="8" Text="APDU"/><TextBlock Grid.Row="8" Grid.Column="1" Text="{Binding OfflineFrameApdu}" FontFamily="Consolas"/>
+                          <TextBlock Grid.Row="9" Text="Payload / DPT"/><TextBlock Grid.Row="9" Grid.Column="1" Text="{Binding OfflineFramePayload}" TextWrapping="Wrap"/>
+                          <TextBlock Grid.Row="10" Text="Length"/><TextBlock Grid.Row="10" Grid.Column="1" Text="{Binding OfflineFrameLength}"/>
+                          <TextBlock Grid.Row="11" Text="Parity"/><TextBlock Grid.Row="11" Grid.Column="1" Text="{Binding OfflineFrameParity}"/>
+                          <TextBlock Grid.Row="12" Text="Checksum"/><TextBlock Grid.Row="12" Grid.Column="1" Text="{Binding OfflineFrameChecksum}"/>
+                          <TextBlock Grid.Row="13" Text="Timing"/><TextBlock Grid.Row="13" Grid.Column="1" Text="{Binding OfflineFrameTiming}"/>
+                          <TextBlock Grid.Row="14" Text="Octets RAW"/><TextBlock Grid.Row="14" Grid.Column="1" Text="{Binding OfflineFrameRaw}" FontFamily="Consolas" TextWrapping="Wrap"/>
                         </Grid>
                         <TextBlock Text="Décodée offline directement depuis les échantillons ADC." FontStyle="Italic" Opacity="0.75" TextWrapping="Wrap"/>
                       </StackPanel>
                     </Border>
-                    <Separator Grid.Row="1"/>
-                    <ScrollViewer Grid.Row="2"><TextBlock Text="{Binding AnalogDetails}" FontFamily="Consolas" TextWrapping="Wrap"/></ScrollViewer>
-                  </Grid>
-                </Grid>
+                    <TextBlock Text="CHARACTER / SLOT DIAGNOSTIC" FontWeight="Bold"/>
+                    <ComboBox ItemsSource="{Binding OfflineCharacters}" SelectedItem="{Binding SelectedOfflineCharacter}">
+                      <ComboBox.ItemTemplate><DataTemplate>
+                        <Grid ColumnDefinitions="75,55,*">
+                          <TextBlock Text="{Binding Index, StringFormat={}Character {0}}"/>
+                          <TextBlock Grid.Column="1" Text="{Binding Value, StringFormat={}0x{0:X2}}" FontFamily="Consolas"/>
+                          <TextBlock Grid.Column="2" Text="{Binding ParityValid, StringFormat={}Parity {0}}"/>
+                        </Grid></DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <TextBlock Text="{Binding OfflineCharacterDiagnostic}" FontFamily="Consolas" FontSize="10" TextWrapping="Wrap"/>
+                    <Grid ColumnDefinitions="48,72,62,58,58,62" Margin="0,3">
+                      <TextBlock Text="Slot" FontWeight="Bold"/><TextBlock Grid.Column="1" Text="Theory" FontWeight="Bold"/>
+                      <TextBlock Grid.Column="2" Text="Sample" FontWeight="Bold"/><TextBlock Grid.Column="3" Text="Q err" FontWeight="Bold"/>
+                      <TextBlock Grid.Column="4" Text="Pulse" FontWeight="Bold"/><TextBlock Grid.Column="5" Text="T err" FontWeight="Bold"/>
+                    </Grid>
+                    <ItemsControl ItemsSource="{Binding OfflineCharacterSlots}">
+                      <ItemsControl.ItemTemplate><DataTemplate>
+                        <Grid ColumnDefinitions="48,72,62,58,58,62" Margin="0,1">
+                          <TextBlock Text="{Binding Name}"/><TextBlock Grid.Column="1" Text="{Binding ExpectedSample, StringFormat={}{0:F2}}"/>
+                          <TextBlock Grid.Column="2" Text="{Binding QuantizedExpectedSample}"/><TextBlock Grid.Column="3" Text="{Binding QuantizationErrorSamples, StringFormat={}{0:+0.00;-0.00;0.00}}"/>
+                          <TextBlock Grid.Column="4" Text="{Binding AssociatedPulseSample, TargetNullValue=—}"/><TextBlock Grid.Column="5" Text="{Binding TimingErrorSamples, StringFormat={}{0:+0.00;-0.00;0.00}, TargetNullValue=—}"/>
+                        </Grid></DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Text="{Binding OfflineProfileComparison}" TextWrapping="Wrap" FontSize="10" Opacity="0.8"/>
+                    </StackPanel>
+                    </ScrollViewer>
+              </Grid>
               </Grid>
             </Grid>
           </TabItem>
