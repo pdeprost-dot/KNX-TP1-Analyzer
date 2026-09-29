@@ -72,6 +72,7 @@ Qualification applies only to the tested XIAO ESP32-S3 and SD setup.
 - LOCAL/SD and Network Session import.
 - Persistent network RAW cache and CRC validation before analysis.
 - Event reconstruction from segmented RAW chunks.
+- Valid offline TP1 records feed Participants, Groups and Interactions analysis.
 - Synchronized ADC/D44 graphs, threshold and TP1 overlays.
 - Event and Record navigation and All/Valid/ACK/Errors filters.
 - Deterministic pulse/slot/character/record pipeline.
