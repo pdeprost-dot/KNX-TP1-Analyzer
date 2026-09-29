@@ -4,6 +4,7 @@ using System.Text.Json;
 namespace KNXAnalyzer.Core;
 
 public sealed record Diagnostic(string File, int Line, string Message);
+public sealed record FieldCampaign(string Schema, string? Site, string? Bus, string? Point, string? Note, uint RequestedDurationSeconds);
 
 public sealed class Session
 {
@@ -16,6 +17,17 @@ public sealed class Session
     public long? RawAvailableBytes { get; set; }
     public string Analyzer { get; set; } = "LOCAL / SD";
     public JsonElement Metadata { get; init; }
+    public JsonElement StartMetadata { get; init; }
+    public uint SampleRateHz { get; set; }
+    public uint DetectionThreshold { get; set; }
+    public uint PreTriggerSamples { get; set; }
+    public uint PostTriggerSamples { get; set; }
+    public string AcquisitionMode { get; set; } = "EVENT";
+    public FieldCampaign? Campaign { get; set; }
+    public bool IsContinuousRaw => AcquisitionMode == "CONTINUOUS_RAW";
+    public ulong? RawSampleStart => RawChunks.Count == 0 ? null : RawChunks.Min(x => x.SampleStart);
+    public ulong? RawSampleEnd => RawChunks.Count == 0 ? null : RawChunks.Max(x => x.SampleEnd);
+    public List<EventRawChunk> RawChunks { get; } = [];
     public NetworkSessionContext? Network { get; set; }
     public List<Tp1Candidate> Candidates { get; } = [];
     public List<AnalogEvent> AnalogEvents { get; } = [];
@@ -27,6 +39,9 @@ public sealed class Session
     public int Count(string classification) => Candidates.Count(x => x.Classification == classification);
     public int DisplayEventCount => Math.Max(EventCount, AnalogEvents.Count);
     public string RawAvailableText => RawAvailableBytes is long bytes ? FormatBytes(bytes) : "unknown";
+    public string CampaignSummary => Campaign is null ? "Field campaign: not specified"
+        : $"Site: {Display(Campaign.Site)}   Bus / Segment: {Display(Campaign.Bus)}   Measurement point: {Display(Campaign.Point)}   Requested duration: {Campaign.RequestedDurationSeconds} s\nNote: {Display(Campaign.Note)}";
+    private static string Display(string? value) => string.IsNullOrWhiteSpace(value) ? "—" : value;
     private static string FormatBytes(long bytes) => bytes < 1024 ? $"{bytes} B"
         : bytes < 1024 * 1024 ? $"{bytes / 1024.0:F1} KiB"
         : bytes < 1024L * 1024 * 1024 ? $"{bytes / (1024.0 * 1024):F1} MiB"
@@ -68,10 +83,14 @@ public sealed class AnalogEvent
     public bool EventRawV2 { get; init; }
     public JsonElement Original { get; init; }
     public RawCaptureSummary? CaptureSummary { get; set; }
+    public EventRawDescriptor? RawDescriptor { get; set; }
+    public RawIntegrityStatus? RawIntegrity { get; set; }
+    public uint? D44Maximum { get; set; }
+    public int? ThresholdExceedanceCount { get; set; }
     public ulong? TimestampUs => U64("trigger_timestamp_us") ?? U64("timestamp_us") ?? U64("monotonic_us");
     public ulong? SampleStart => U64("sample_start");
     public ulong? SampleEnd => U64("sample_end");
-    public ulong? SampleTrigger => U64("sample_trigger");
+    public ulong? SampleTrigger => U64("sample_trigger") ?? U64("trigger_sample");
     public string Kind => Text("event_type") ?? Text("type") ?? Text("reason") ?? TriggerSource();
     public string PositionText => TimestampUs is ulong timestamp ? FormatPosition(timestamp)
         : SampleTrigger is ulong trigger ? $"sample {trigger:N0}" : "unknown";
@@ -79,8 +98,20 @@ public sealed class AnalogEvent
         ? $"{end - start:N0} samples" : CaptureSummary is { } summary ? $"{summary.SampleCount:N0} samples" : "unknown";
     public string MinimumText => CaptureSummary?.Minimum.ToString() ?? "—";
     public string MaximumText => CaptureSummary?.Maximum.ToString() ?? "—";
-    public string PeakToPeakText => CaptureSummary?.PeakToPeak.ToString() ?? "—";
-    public string CrcText => CaptureSummary is null ? "Unavailable" : CaptureSummary.CrcValid ? "OK" : "INVALID";
+    public int? RecordedPeakToPeak => U64("adc_min") is ulong minimum && U64("adc_max") is ulong maximum && maximum >= minimum
+        ? checked((int)(maximum - minimum)) : null;
+    public string PeakToPeakText => (CaptureSummary?.PeakToPeak ?? RecordedPeakToPeak)?.ToString() ?? "—";
+    public string CrcText => RawIntegrity switch {
+        RawIntegrityStatus.Valid => "OK",
+        RawIntegrityStatus.CrcInvalid => "Invalid",
+        RawIntegrityStatus.MissingChunk => "Missing",
+        RawIntegrityStatus.Gap => "Gap",
+        RawIntegrityStatus.Incomplete => "Incomplete",
+        _ => CaptureSummary is null ? "Pending" : CaptureSummary.CrcValid ? "OK" : "Invalid"
+    };
+    public string ChunkCountText => RawDescriptor is null ? "—" : RawDescriptor.Chunks.Count.ToString();
+    public string DurationText => RawDescriptor is null ? "—" : $"{RawDescriptor.DurationMilliseconds:F3} ms";
+    public string D44MaximumText => D44Maximum?.ToString() ?? (RawPersisted ? "Pending" : "—");
     private ulong? U64(string name)
     {
         if (!Original.TryGetProperty(name, out var value)) return null;
@@ -202,12 +233,24 @@ public sealed class RawCapture
     public uint EventId { get; init; }
     public uint SampleRateHz { get; init; }
     public uint TriggerIndex { get; init; }
+    public ulong SampleStart { get; init; }
+    public ulong SampleEnd { get; init; }
+    public ulong TriggerSample { get; init; }
+    public uint Threshold { get; init; }
+    public uint ConfiguredPreSamples { get; init; }
+    public uint ConfiguredPostSamples { get; init; }
+    public int ChunkCount { get; init; }
     public ushort Minimum { get; init; }
     public ushort Maximum { get; init; }
     public ushort[] Samples { get; init; } = [];
+    public ushort[] D44 { get; init; } = [];
+    public int[] ThresholdExceedanceIndices { get; init; } = [];
     public bool CrcValid { get; init; }
+    public RawIntegrityStatus Integrity { get; init; } = RawIntegrityStatus.Valid;
     public double Mean { get; init; }
     public int PeakToPeak => Maximum - Minimum;
+    public ushort D44Maximum => D44.Length == 0 ? (ushort)0 : D44.Max();
+    public double DurationMilliseconds => SampleRateHz == 0 ? 0 : 1000.0 * Samples.Length / SampleRateHz;
     public RawCaptureSummary Summary => new(Samples.Length, SampleRateHz, Minimum, Maximum, PeakToPeak, Mean, CrcValid);
 
     public static RawCapture Read(string path)
@@ -227,8 +270,9 @@ public sealed class RawCapture
             minimum = Math.Min(minimum, sample); maximum = Math.Max(maximum, sample); sum += sample;
         }
         if (samples.Length == 0) { minimum = 0; maximum = 0; }
+        var d44 = D44Analyzer.Calculate(samples);
         return new RawCapture { EventId = u32(12), SampleRateHz = u32(16), TriggerIndex = u32(24), Minimum = minimum, Maximum = maximum, Mean = samples.Length == 0 ? 0 : (double)sum / samples.Length, Samples = samples,
-            CrcValid = Crc32(bytes.AsSpan(48)) == u32(40) };
+            D44 = d44, CrcValid = Crc32(bytes.AsSpan(48)) == u32(40) };
     }
     private static uint Crc32(ReadOnlySpan<byte> data)
     {

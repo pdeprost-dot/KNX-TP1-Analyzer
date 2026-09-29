@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using KNXAnalyzer.Core;
@@ -13,7 +14,9 @@ namespace KNXAnalyzer.Desktop.ViewModels;
 public partial class MainViewModel : ViewModelBase
 {
     private NetworkImportService? networkImport;
+    private int networkOperationBusy;
     public ObservableCollection<Session> Sessions { get; } = [];
+    public ObservableCollection<NetworkSessionInfo> NetworkSessions { get; } = [];
     public ObservableCollection<Tp1Candidate> VisibleCandidates { get; } = [];
     public ObservableCollection<AnalogEvent> AnalogEvents { get; } = [];
     public ObservableCollection<ParticipantDisplay> Participants { get; } = [];
@@ -21,14 +24,19 @@ public partial class MainViewModel : ViewModelBase
     public ObservableCollection<InteractionDisplay> Interactions { get; } = [];
     public ObservableCollection<ParticipantDestinationDisplay> ParticipantDestinations { get; } = [];
     public ObservableCollection<OfflineTp1Candidate> OfflineCandidates { get; } = [];
+    public ObservableCollection<OfflineTp1Candidate> OfflineRecordResults { get; } = [];
+    public ObservableCollection<Tp1Character> OfflineCharacters { get; } = [];
+    public ObservableCollection<Tp1BitSlot> OfflineCharacterSlots { get; } = [];
     public string[] Filters { get; } = ["All", "Valid", "Errors", "ACK", "Unknown"];
     public string[] AnalogSortOptions { get; } = ["P-P descending", "P-P ascending", "Event ID"];
     public IReadOnlyList<Tp1AnalogDecodeProfile> OfflineProfiles { get; } = Tp1AnalogDecodeProfile.Available;
+    public string[] OfflineRecordFilters { get; } = ["All", "Valid", "ACK", "Errors"];
     public string[] InteractionSortOptions { get; } = ["Occurrences", "Sessions", "Délai médian"];
     [ObservableProperty] private string folderPath = "";
     [ObservableProperty] private string networkHost = NetworkImportService.RememberedAnalyzer;
     [ObservableProperty] private string networkAnalyzer = "No network Analyzer connected.";
     [ObservableProperty] private string networkProgress = "";
+    [ObservableProperty] private NetworkSessionInfo? selectedNetworkSession;
     [ObservableProperty] private string status = "Open an SD root, sessions folder, or one session folder.";
     [ObservableProperty] private Session? selectedSession;
     [ObservableProperty] private Tp1Candidate? selectedCandidate;
@@ -42,6 +50,8 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty] private int selectedTabIndex;
     [ObservableProperty] private string analogVariationNotice = "";
     [ObservableProperty] private string analogAxis = "Time axis unavailable";
+    [ObservableProperty] private string analogCursor = "Move the pointer over either graph to inspect a sample.";
+    [ObservableProperty] private string eventViewerSummary = "Select an event to open Event RAW Viewer V1.";
     [ObservableProperty] private int observedTrafficCount;
     [ObservableProperty] private int syntheticExcludedCount;
     [ObservableProperty] private int participantCount;
@@ -68,10 +78,23 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty] private int offlineCandidateCount;
     [ObservableProperty] private int offlineValidFrameCount;
     [ObservableProperty] private OfflineTp1Candidate? selectedOfflineCandidate;
+    [ObservableProperty] private Tp1Character? selectedOfflineCharacter;
+    [ObservableProperty] private string offlineCharacterDiagnostic = "Sélectionnez un caractère.";
+    [ObservableProperty] private string selectedOfflineRecordFilter = "All";
+    [ObservableProperty] private Tp1DecodeResult? selectedTp1Decode;
+    [ObservableProperty] private bool showTp1Overlays = true;
     [ObservableProperty] private string offlineFrameTitle = "";
+    [ObservableProperty] private string offlineFrameControl = "—";
+    [ObservableProperty] private string offlineFramePriority = "—";
+    [ObservableProperty] private string offlineFrameFlags = "—";
     [ObservableProperty] private string offlineFrameSource = "—";
     [ObservableProperty] private string offlineFrameDestination = "—";
+    [ObservableProperty] private string offlineFrameTpci = "—";
+    [ObservableProperty] private string offlineFrameApci = "—";
     [ObservableProperty] private string offlineFrameService = "—";
+    [ObservableProperty] private string offlineFrameApdu = "—";
+    [ObservableProperty] private string offlineFramePayload = "—";
+    [ObservableProperty] private string offlineFrameLength = "—";
     [ObservableProperty] private string offlineFrameChecksum = "—";
     [ObservableProperty] private string offlineFrameParity = "—";
     [ObservableProperty] private string offlineFrameTiming = "—";
@@ -90,17 +113,37 @@ public partial class MainViewModel : ViewModelBase
     }
     public async Task OpenNetworkAsync()
     {
+        if (Interlocked.Exchange(ref networkOperationBusy, 1) != 0) {
+            Status = "Network operation already in progress.";
+            return;
+        }
         try {
             Status = "Network: discovery / Analyzer API..."; NetworkProgress = "metadata";
             networkImport?.Dispose(); networkImport = new NetworkImportService(NetworkHost);
             var analyzer = await networkImport.ConnectAsync();
             NetworkAnalyzer = $"{analyzer.Hostname} · {analyzer.AnalyzerId} · {analyzer.Ip} · RSSI {analyzer.Rssi} dBm · {analyzer.FirmwareVersion} · {analyzer.State} · SD {(analyzer.SdReady ? "READY" : "ERROR")}";
-            var remote = await networkImport.ListSessionsAsync(); Sessions.Clear();
-            var progress = new Progress<NetworkImportProgress>(x => NetworkProgress = x.FromCache ? $"cache · {x.Downloaded} bytes" : x.Total is long total ? $"{x.Stage} · {x.Downloaded}/{total}" : x.Stage);
-            foreach (var descriptor in remote) Sessions.Add(await networkImport.ImportMetadataAsync(descriptor, progress));
-            FolderPath = $"NETWORK {networkImport.BaseUri}"; RefreshTrafficAnalysis(); SelectedSession = Sessions.FirstOrDefault();
-            NetworkProgress = "metadata ready"; Status = $"{Sessions.Count} network session(s). RAW will be fetched on demand.";
+            var remote = await networkImport.ListSessionsAsync(); NetworkSessions.Clear();
+            foreach (var descriptor in remote.OrderByDescending(x => x.StartUtc).ThenByDescending(x => x.SessionId)) NetworkSessions.Add(descriptor);
+            SelectedNetworkSession = NetworkSessions.FirstOrDefault();
+            FolderPath = $"NETWORK {networkImport.BaseUri}";
+            NetworkProgress = "session list ready"; Status = $"{NetworkSessions.Count} network session(s). Select one, then import metadata.";
         } catch (Exception e) { Status = $"Network import: {e.Message}"; NetworkProgress = "error"; }
+        finally { Volatile.Write(ref networkOperationBusy, 0); }
+    }
+    public async Task ImportSelectedNetworkSessionAsync()
+    {
+        if (networkImport is null || SelectedNetworkSession is null) return;
+        if (Interlocked.Exchange(ref networkOperationBusy, 1) != 0) {
+            Status = "Network operation already in progress.";
+            return;
+        }
+        try {
+            var progress = new Progress<NetworkImportProgress>(x => NetworkProgress = x.FromCache ? $"cache · {x.Stage}" : x.Total is long total ? $"{x.Stage} · {x.Downloaded}/{total}" : x.Stage);
+            var session = await networkImport.ImportMetadataAsync(SelectedNetworkSession, progress);
+            Sessions.Clear(); Sessions.Add(session); RefreshTrafficAnalysis(); SelectedSession = session;
+            NetworkProgress = "metadata validated"; Status = "Session imported. Event RAW will be fetched and CRC-checked on demand.";
+        } catch (Exception e) { Status = $"Network import: {e.Message}"; NetworkProgress = "error"; }
+        finally { Volatile.Write(ref networkOperationBusy, 0); }
     }
     private void RefreshTrafficAnalysis()
     {
@@ -175,7 +218,8 @@ public partial class MainViewModel : ViewModelBase
         VisibleCandidates.Clear(); AnalogEvents.Clear(); SelectedCandidate = null; SelectedAnalogEvent = null;
         if (value is null) { Summary = "No session selected"; return; }
         RefreshAnalogSort();
-        Summary = $"Analyzer: {value.Analyzer}   Session: {value.Id}   State: {value.State}   Duration: {(value.DurationMs is long ms ? $"{TimeSpan.FromMilliseconds(ms):hh\\:mm\\:ss}" : "unknown")}   Events: {value.DisplayEventCount}   RAW available: {value.RawAvailableText}\n" +
+        Summary = $"Analyzer: {value.Analyzer}   Session: {value.Id}   Mode: {value.AcquisitionMode}   State: {value.State}   Duration: {(value.DurationMs is long ms ? $"{TimeSpan.FromMilliseconds(ms):hh\\:mm\\:ss}" : "unknown")}   Events: {value.DisplayEventCount}   RAW available: {value.RawAvailableText}\n" +
+            $"{value.CampaignSummary}\n" +
             $"Date: {value.DateTime ?? "unavailable (device clock unset)"}   Format: {value.Generation}   Candidates: {value.Candidates.Count}   Valid: {value.Count("VALID_KNOWN") + value.Count("VALID_UNKNOWN")}   ACK: {value.Candidates.Count(x => x.Ack == "ACK")}   Parity: {value.Count("INVALID_PARITY")}   Checksum: {value.Count("INVALID_CHECKSUM")}   Timing: {value.Count("INVALID_TIMING")}   Incomplete: {value.Count("INCOMPLETE")}   Warnings: {value.Diagnostics.Count}";
         var decoded = value.Candidates.Select(KnxTelegramDecoder.Decode).Where(x => x is not null).ToArray();
         Summary += $"   Decoded standard: {decoded.Length}   Group: {decoded.Count(x => x!.DestinationType == "group")}   Individual: {decoded.Count(x => x!.DestinationType == "individual")}   Repeat: {decoded.Count(x => x!.Repeat)}";
@@ -190,18 +234,18 @@ public partial class MainViewModel : ViewModelBase
         AnalogEvents.Clear();
         if (SelectedSession is null) return;
         var ordered = SelectedAnalogSort switch {
-            "P-P ascending" => SelectedSession.AnalogEvents.OrderBy(x => x.CaptureSummary?.PeakToPeak ?? int.MaxValue).ThenBy(x => x.EventId),
+            "P-P ascending" => SelectedSession.AnalogEvents.OrderBy(x => x.CaptureSummary?.PeakToPeak ?? x.RecordedPeakToPeak ?? int.MaxValue).ThenBy(x => x.EventId),
             "Event ID" => SelectedSession.AnalogEvents.OrderBy(x => x.EventId),
-            _ => SelectedSession.AnalogEvents.OrderByDescending(x => x.CaptureSummary?.PeakToPeak ?? -1).ThenBy(x => x.EventId)
+            _ => SelectedSession.AnalogEvents.OrderByDescending(x => x.CaptureSummary?.PeakToPeak ?? x.RecordedPeakToPeak ?? -1).ThenBy(x => x.EventId)
         };
         foreach (var item in ordered) AnalogEvents.Add(item);
         if (selected is not null && AnalogEvents.Contains(selected)) SelectedAnalogEvent = selected;
     }
     public void SelectLargestCapture()
     {
-        var winner = Sessions.SelectMany(s => s.AnalogEvents.Where(e => e.CaptureSummary is { CrcValid: true })
+        var winner = Sessions.SelectMany(s => s.AnalogEvents.Where(e => e.RawPersisted)
             .Select(e => (Session: s, Event: e)))
-            .OrderByDescending(x => x.Event.CaptureSummary!.PeakToPeak).FirstOrDefault();
+            .OrderByDescending(x => x.Event.CaptureSummary?.PeakToPeak ?? x.Event.RecordedPeakToPeak ?? -1).FirstOrDefault();
         if (winner.Event is null) return;
         SelectedSession = winner.Session;
         SelectedAnalogSort = "P-P descending";
@@ -232,10 +276,10 @@ public partial class MainViewModel : ViewModelBase
     partial void OnSelectedAnalogEventChanged(AnalogEvent? value)
     {
         SelectedCapture = null; AnalogAxis = "Time axis unavailable"; AnalogVariationNotice = "";
-        OfflineCandidates.Clear(); SelectedOfflineCandidate = null; OfflineAnalysisSummary = "Analyse offline indisponible.";
+        OfflineCandidates.Clear(); OfflineRecordResults.Clear(); SelectedOfflineCandidate = null; SelectedTp1Decode = null; OfflineAnalysisSummary = "Analyse offline indisponible.";
         OfflineSampleCount = 0; OfflineDuration = OfflineBaseline = OfflineNoiseRms = OfflineActivity = "—";
         OfflinePulseCount = OfflineCandidateCount = OfflineValidFrameCount = 0; ClearOfflineFrame();
-        if (value is null || SelectedSession is null) { AnalogDetails = "Select an analog event."; return; }
+        if (value is null || SelectedSession is null) { AnalogDetails = "Select an analog event."; EventViewerSummary = "Select an event to open Event RAW Viewer V1."; return; }
         AnalogDetails = JsonSerializer.Serialize(value.Original, new JsonSerializerOptions { WriteIndented = true });
         if (!value.RawPersisted) return;
         if (SelectedSession.Network is not null && networkImport is not null) { _ = LoadNetworkCaptureAsync(SelectedSession, value); return; }
@@ -243,7 +287,9 @@ public partial class MainViewModel : ViewModelBase
         try {
             var raw = value.EventRawV2 ? EventRawV2Reader.ReadCapture(SelectedSession.DirectoryPath, value.EventId) : RawCapture.Read(path);
             PresentCapture(raw);
-        } catch (Exception e) { AnalogDetails = $"RAW unavailable: {e.Message}\n\n" + AnalogDetails; }
+        } catch (RawCaptureLoadException e) { SetRawIntegrity(value, e.Status); AnalogDetails = $"RAW {e.Status}: {e.Message}\n\n" + AnalogDetails; EventViewerSummary = $"Event {value.EventId} · RAW {e.Status}"; }
+        catch (InvalidDataException e) { SetRawIntegrity(value, RawIntegrityStatus.CrcInvalid); AnalogDetails = $"RAW CRC invalid: {e.Message}\n\n" + AnalogDetails; EventViewerSummary = $"Event {value.EventId} · RAW CRC invalid"; }
+        catch (Exception e) { AnalogDetails = $"RAW unavailable: {e.Message}\n\n" + AnalogDetails; }
     }
     private async Task LoadNetworkCaptureAsync(Session session, AnalogEvent value)
     {
@@ -254,24 +300,54 @@ public partial class MainViewModel : ViewModelBase
             if (!ReferenceEquals(SelectedSession, session) || SelectedAnalogEvent?.EventId != value.EventId) return;
             value.CaptureSummary = raw.Summary; PresentCapture(raw);
             NetworkProgress = "verification · CRC OK · decode"; Status = $"Event {value.EventId}: network RAW verified and decoded.";
-        } catch (Exception e) { NetworkProgress = "error · retry available"; Status = $"Network RAW: {e.Message}"; AnalogDetails = $"RAW unavailable: {e.Message}\n\n" + AnalogDetails; }
+        } catch (RawCaptureLoadException e) { SetRawIntegrity(value, e.Status); NetworkProgress = $"error · {e.Status}"; Status = $"Network RAW {e.Status}: {e.Message}"; AnalogDetails = $"RAW {e.Status}: {e.Message}\n\n" + AnalogDetails; EventViewerSummary = $"Event {value.EventId} · RAW {e.Status}"; }
+        catch (Exception e) { NetworkProgress = "error · retry available"; Status = $"Network RAW: {e.Message}"; AnalogDetails = $"RAW unavailable: {e.Message}\n\n" + AnalogDetails; }
+    }
+    public void SelectAdjacentEvent(int delta)
+    {
+        if (AnalogEvents.Count == 0) return;
+        var index = SelectedAnalogEvent is null ? 0 : AnalogEvents.IndexOf(SelectedAnalogEvent);
+        SelectedAnalogEvent = AnalogEvents[Math.Clamp(index + delta, 0, AnalogEvents.Count - 1)];
     }
     private void PresentCapture(RawCapture raw)
     {
         if (!raw.CrcValid) throw new InvalidDataException("RAW CRC is invalid; decode refused.");
+        if (SelectedAnalogEvent is { } selected) {
+            selected.CaptureSummary = raw.Summary;
+            selected.RawIntegrity = raw.Integrity;
+            selected.D44Maximum = raw.D44Maximum;
+            selected.ThresholdExceedanceCount = raw.ThresholdExceedanceIndices.Length;
+            var index = AnalogEvents.IndexOf(selected);
+            if (index >= 0) AnalogEvents[index] = selected;
+        }
         SelectedCapture = raw; ApplyOfflineAnalysis(raw);
+        EventViewerSummary = $"Event {raw.EventId} · {raw.DurationMilliseconds:F3} ms · {raw.Samples.Length:N0} samples · {raw.SampleRateHz:N0} Hz · ADC {raw.Minimum}…{raw.Maximum} · D44 max {raw.D44Maximum} · threshold {raw.Threshold} · {raw.Integrity}";
         AnalogVariationNotice = raw.PeakToPeak <= 2 ? "No analog variation in this capture" : "";
         AnalogAxis = raw.SampleRateHz == 0 ? "Time axis unavailable (sample rate 0)" : $"Time: {-1000.0 * raw.TriggerIndex / raw.SampleRateHz:F1} ms     trigger t=0     +{1000.0 * (raw.Samples.Length - raw.TriggerIndex) / raw.SampleRateHz:F1} ms";
         var pipeline = AnalogVoltagePipeline.FromSessionMetadata(SelectedSession!.Metadata);
+        var s3Gpio1 = SelectedSession.StartMetadata.ValueKind == JsonValueKind.Object &&
+            SelectedSession.StartMetadata.TryGetProperty("adc_gpio", out var adcGpio) && adcGpio.TryGetInt32(out var gpio) && gpio == 1;
         string voltage;
-        if (pipeline.Calibration is null) {
+        if (s3Gpio1) {
+            voltage = "ADC RAW is authoritative. No voltage conversion is recorded for the XIAO GPIO1 front-end.";
+        } else if (pipeline.Calibration is null) {
             voltage = $"Estimated ADC voltage — experimental calibration (GPIO5): {ExperimentalEstimatedCalibration.EstimateMillivolts(raw.Minimum):F0}–{ExperimentalEstimatedCalibration.EstimateMillivolts(raw.Maximum):F0} mV. One approximate point; proportional display assumption; accuracy unknown. RAW remains authoritative.";
         } else if (pipeline.TryEstimateGpio5Millivolts(raw.Minimum, out var lowMv) && pipeline.TryEstimateGpio5Millivolts(raw.Maximum, out var highMv)) {
             voltage = $"Estimated ADC at GPIO5: {lowMv:F1}–{highMv:F1} mV (calibration: {pipeline.Calibration.Source}).";
             if (pipeline.TryEstimateKnxBusVolts(raw.Minimum, out var lowBus) && pipeline.TryEstimateKnxBusVolts(raw.Maximum, out var highBus))
                 voltage += $" Estimated KNX bus: {lowBus:F2}–{highBus:F2} V (divider: {pipeline.Divider!.Source}).";
         } else voltage = "ADC calibration does not cover this RAW range. GPIO5 voltage is unavailable.";
-        AnalogDetails = $"RAW at GPIO5: {raw.Samples.Length} samples | {raw.SampleRateHz} Hz | min {raw.Minimum} | max {raw.Maximum} | P-P {raw.PeakToPeak} | mean {raw.Mean:F2} | CRC OK | trigger index {raw.TriggerIndex}\n{voltage}\n\n" + AnalogDetails;
+        AnalogDetails = $"EVENT RAW VIEWER V1\nEvent {raw.EventId} | {raw.ChunkCount} chunks | {raw.Samples.Length:N0} samples | {raw.DurationMilliseconds:F3} ms | {raw.SampleRateHz:N0} Hz\n" +
+            $"Samples [{raw.SampleStart:N0}, {raw.SampleEnd:N0}) | trigger {raw.TriggerSample:N0} (index {raw.TriggerIndex:N0}) | actual pre {raw.TriggerIndex:N0} | actual post {raw.Samples.Length - raw.TriggerIndex:N0} | configured pre/post {raw.ConfiguredPreSamples:N0}/{raw.ConfiguredPostSamples:N0}\n" +
+            $"ADC min {raw.Minimum} | max {raw.Maximum} | P-P {raw.PeakToPeak} | mean {raw.Mean:F3}\n" +
+            $"D44 max {raw.D44Maximum} | threshold {raw.Threshold} | D44 > threshold: {raw.ThresholdExceedanceIndices.Length:N0}\n" +
+            $"Integrity {raw.Integrity} | CRC OK\n{voltage}\n\n" + AnalogDetails;
+    }
+    private void SetRawIntegrity(AnalogEvent item, RawIntegrityStatus status)
+    {
+        item.RawIntegrity = status;
+        var index = AnalogEvents.IndexOf(item);
+        if (index >= 0) AnalogEvents[index] = item;
     }
     partial void OnSelectedOfflineProfileChanged(Tp1AnalogDecodeProfile value)
     {
@@ -281,10 +357,10 @@ public partial class MainViewModel : ViewModelBase
     private void ApplyOfflineAnalysis(RawCapture raw)
     {
         var offline = OfflineRawAnalyzer.Analyze(raw, SelectedOfflineProfile);
-        OfflineCandidates.Clear();
-        foreach (var candidate in offline.Tp1Candidates) OfflineCandidates.Add(candidate);
-        SelectedOfflineCandidate = OfflineCandidates.FirstOrDefault(x => x.Classification == OfflineAnalogClassification.TP1_VALID_FRAME)
-            ?? OfflineCandidates.FirstOrDefault();
+        SelectedTp1Decode = offline.DecodeResult;
+        OfflineRecordResults.Clear();
+        foreach (var candidate in offline.Tp1Candidates) OfflineRecordResults.Add(candidate);
+        RefreshOfflineRecordFilter(preferValid: true);
         var experimental = offline.Profile.Experimental ? " · Experimental / field candidate" : "";
         OfflineAnalysisSummary = $"Profil actif : {offline.Profile.DisplayName} · seuils {offline.Profile.LowThreshold}/{offline.Profile.HighThreshold} RAW{experimental} · classification {offline.Classification}";
         OfflineSampleCount = offline.SampleCount;
@@ -292,31 +368,93 @@ public partial class MainViewModel : ViewModelBase
         OfflineBaseline = $"{offline.Baseline:F2} RAW";
         OfflineNoiseRms = $"{offline.NoiseRms:F2} RAW";
         OfflineActivity = offline.Classification == OfflineAnalogClassification.NO_SIGNAL ? "Aucune" : "Détectée";
-        OfflinePulseCount = offline.PulseCandidates.Count;
+        OfflinePulseCount = offline.DecodeResult?.Pulses.Count ?? 0;
         OfflineCandidateCount = offline.Tp1Candidates.Count;
         OfflineValidFrameCount = offline.ValidFrameCount;
         var comparison = OfflineRawAnalyzer.CompareProfiles(raw);
         OfflineProfileComparison = string.Join(Environment.NewLine,
-            $"Historical : {comparison.Historical.Tp1Candidates.Count} trames · parité OK {comparison.Historical.Tp1Candidates.Count - comparison.Historical.ParityErrorCount} · erreurs parité {comparison.Historical.ParityErrorCount} · checksum {comparison.Historical.ChecksumErrorCount} · timing {comparison.Historical.TimingErrorCount}",
-            $"Field candidate : {comparison.FieldCandidate.Tp1Candidates.Count} trames · parité OK {comparison.FieldCandidate.Tp1Candidates.Count - comparison.FieldCandidate.ParityErrorCount} · erreurs parité {comparison.FieldCandidate.ParityErrorCount} · checksum {comparison.FieldCandidate.ChecksumErrorCount} · timing {comparison.FieldCandidate.TimingErrorCount}",
+            $"Historical : {comparison.Historical.Tp1Candidates.Count} records · valides {comparison.Historical.ValidFrameCount} · ACK {comparison.Historical.DecodeResult?.AckCount ?? 0} · parité {comparison.Historical.ParityErrorCount} · checksum {comparison.Historical.ChecksumErrorCount} · timing {comparison.Historical.TimingErrorCount}",
+            $"Field candidate : {comparison.FieldCandidate.Tp1Candidates.Count} records · valides {comparison.FieldCandidate.ValidFrameCount} · ACK {comparison.FieldCandidate.DecodeResult?.AckCount ?? 0} · parité {comparison.FieldCandidate.ParityErrorCount} · checksum {comparison.FieldCandidate.ChecksumErrorCount} · timing {comparison.FieldCandidate.TimingErrorCount}",
             $"Octets identiques : {(comparison.ByteStreamsIdentical ? "oui" : "non — différences détectées")}");
+    }
+    partial void OnSelectedOfflineRecordFilterChanged(string value) => RefreshOfflineRecordFilter();
+    private void RefreshOfflineRecordFilter(bool preferValid = false)
+    {
+        var selected = SelectedOfflineCandidate;
+        OfflineCandidates.Clear();
+        foreach (var record in OfflineRecordResults.Where(x => MatchesOfflineRecordFilter(x, SelectedOfflineRecordFilter)))
+            OfflineCandidates.Add(record);
+        if (selected is not null && OfflineCandidates.Contains(selected)) SelectedOfflineCandidate = selected;
+        else SelectedOfflineCandidate = preferValid
+            ? OfflineCandidates.FirstOrDefault(x => x.RecordClassification is Tp1RecordClassification.VALID_KNOWN or Tp1RecordClassification.VALID_UNKNOWN)
+                ?? OfflineCandidates.FirstOrDefault()
+            : OfflineCandidates.FirstOrDefault();
+    }
+    public static bool MatchesOfflineRecordFilter(OfflineTp1Candidate record, string filter) => filter switch {
+        "Valid" => record.RecordClassification is Tp1RecordClassification.VALID_KNOWN or Tp1RecordClassification.VALID_UNKNOWN,
+        "ACK" => record.KnownControl == Tp1KnownControl.ACK,
+        "Errors" => record.RecordClassification is Tp1RecordClassification.INVALID_PARITY or Tp1RecordClassification.INVALID_TIMING or Tp1RecordClassification.INVALID_CHECKSUM,
+        _ => true
+    };
+    public void SelectAdjacentOfflineRecord(int delta)
+    {
+        if (OfflineCandidates.Count == 0) return;
+        var index = SelectedOfflineCandidate is null ? 0 : OfflineCandidates.IndexOf(SelectedOfflineCandidate);
+        SelectedOfflineCandidate = OfflineCandidates[Math.Clamp(index + delta, 0, OfflineCandidates.Count - 1)];
     }
     partial void OnSelectedOfflineCandidateChanged(OfflineTp1Candidate? value)
     {
+        OfflineCharacters.Clear(); OfflineCharacterSlots.Clear(); SelectedOfflineCharacter = null;
         if (value is null) { ClearOfflineFrame(); return; }
-        OfflineFrameTitle = value.Classification == OfflineAnalogClassification.TP1_VALID_FRAME
-            ? "TRAME TP1 RECONSTRUITE DEPUIS LE RAW" : "CANDIDAT TP1 RECONSTRUIT DEPUIS LE RAW";
-        OfflineFrameSource = value.Telegram?.Source ?? "Indisponible";
-        OfflineFrameDestination = value.Telegram?.Destination ?? "Indisponible";
-        OfflineFrameService = value.Telegram?.Service ?? "Indisponible";
-        OfflineFrameChecksum = value.ChecksumValid ? "Valide" : "Invalide";
+        var decodedRecord = SelectedTp1Decode?.Records.FirstOrDefault(x =>
+            x.StartSample == value.StartSample && x.EndSample == value.EndSample && x.RawHex == value.RawHex);
+        if (decodedRecord is not null) {
+            foreach (var character in decodedRecord.Characters) OfflineCharacters.Add(character);
+            SelectedOfflineCharacter = OfflineCharacters.FirstOrDefault(x => !x.ParityValid || !x.TimingValid)
+                ?? OfflineCharacters.FirstOrDefault();
+        }
+        var parsed = value.ParseResult ?? (decodedRecord is null ? null : KnxTelegramDecoder.Parse(decodedRecord));
+        OfflineFrameTitle = parsed switch {
+            { Kind: KnxRecordKind.Telegram } => "KNX TELEGRAM",
+            { Kind: KnxRecordKind.BusControl, BusControl: { } control } => $"BUS CONTROL · {control.Type}",
+            _ => $"TP1 DIAGNOSTIC · {value.RecordClassification}"
+        };
+        var notApplicable = value.KnownControl != Tp1KnownControl.None || value.RawHex.Length < 16;
+        var telegram = parsed?.Telegram;
+        OfflineFrameControl = telegram is null ? (parsed?.BusControl is { } bus ? $"0x{bus.Raw:X2}" : "Non applicable") : $"0x{telegram.Control:X2} · {telegram.Format}";
+        OfflineFramePriority = telegram?.Priority ?? "Non applicable";
+        OfflineFrameFlags = telegram is null ? "Non applicable" : $"Repeat: {telegram.Repeat} · System broadcast: {telegram.ControlField.SystemBroadcast}";
+        OfflineFrameSource = telegram?.Source ?? (notApplicable ? "Non applicable" : "Indisponible");
+        OfflineFrameDestination = telegram is null ? (notApplicable ? "Non applicable" : "Indisponible") :
+            telegram.GroupDestination is { } group ? $"{group.ThreeLevel} · raw 0x{group.Raw:X4} · 2-level {group.TwoLevel} (group)" :
+            $"{telegram.Destination} · raw 0x{telegram.IndividualDestination!.Value.Raw:X4} (individual)";
+        OfflineFrameTpci = telegram?.Transport.Name ?? "Non applicable";
+        OfflineFrameApci = telegram is null ? "Non applicable" : $"{telegram.ApplicationService.Display} · raw 0x{telegram.ApplicationService.Raw:X3}";
+        OfflineFrameService = telegram?.Service ?? parsed?.BusControl?.Type.ToString() ?? (notApplicable ? "Non applicable" : "Indisponible");
+        OfflineFrameApdu = telegram?.ApplicationData.ApduHex ?? "Non applicable";
+        OfflineFramePayload = telegram is null ? "Non applicable" : $"{telegram.ApplicationData.RawDisplay} · DPT Unknown";
+        OfflineFrameLength = telegram is null ? value.RawHex.Length / 2 + " byte(s)" : $"NPCI {telegram.Length} · record {telegram.RawBytes.Length} bytes";
+        OfflineFrameChecksum = value.RawHex.Length < 16 ? "Non applicable" : value.ChecksumValid ? "Valide" : "Invalide";
         OfflineFrameParity = value.ParityErrors == 0 ? "Valide" : $"Invalide · {value.ParityErrors} erreur(s)";
         OfflineFrameTiming = $"{value.TimingRmsMicroseconds:F2} µs RMS · max {value.TimingMaxErrorMicroseconds:F2} µs";
         OfflineFrameRaw = value.RawHex;
     }
+    partial void OnSelectedOfflineCharacterChanged(Tp1Character? value)
+    {
+        OfflineCharacterSlots.Clear();
+        if (value is null) { OfflineCharacterDiagnostic = "Sélectionnez un caractère."; return; }
+        foreach (var slot in value.Slots) OfflineCharacterSlots.Add(slot);
+        OfflineCharacterDiagnostic =
+            $"Event {value.EventId} · Record {value.RecordIndex} · Character {value.Index} · local sample {value.StartSample:N0} · absolute {value.AbsoluteStartSample:N0} · t={value.RelativeStartMicroseconds / 1000.0:+0.000;-0.000;0.000} ms\n" +
+            $"Byte {value.Value:X2} · bits LSB {value.DataBitsLsb} · ones {value.DataOneCount} · parity expected {(value.ExpectedParity ? 1 : 0)} / observed {(value.ReceivedParity ? 1 : 0)} · {(value.ParityValid ? "VALID" : "INVALID")} · STOP {(value.ReceivedStop ? 1 : 0)}\n" +
+            $"Timing signed mean {value.TimingSignedMeanSamples:+0.000;-0.000;0.000} sample · abs mean {value.TimingAbsoluteMeanSamples:F3} · RMS {value.TimingRmsSamples:F3} · max {value.TimingMaximumSamples:F3} · unassigned {value.UnassignedPulses.Count} · duplicate-slot {value.DuplicateSlotPulses.Count}";
+    }
     private void ClearOfflineFrame()
     {
         OfflineFrameTitle = "";
-        OfflineFrameSource = OfflineFrameDestination = OfflineFrameService = OfflineFrameChecksum = OfflineFrameParity = OfflineFrameTiming = OfflineFrameRaw = "—";
+        OfflineCharacterDiagnostic = "Sélectionnez un caractère.";
+        OfflineFrameControl = OfflineFramePriority = OfflineFrameFlags = OfflineFrameSource = OfflineFrameDestination =
+            OfflineFrameTpci = OfflineFrameApci = OfflineFrameService = OfflineFrameApdu = OfflineFramePayload = OfflineFrameLength =
+            OfflineFrameChecksum = OfflineFrameParity = OfflineFrameTiming = OfflineFrameRaw = "—";
     }
 }
