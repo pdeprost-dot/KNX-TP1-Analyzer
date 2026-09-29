@@ -123,6 +123,8 @@ public partial class MainWindow : Window
         if (folders.Count > 0 && DataContext is MainViewModel vm && folders[0].TryGetLocalPath() is string path) vm.OpenFolder(path);
     }
 
+    private void RawCorpusClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e) => new RawCorpusWindow().Show();
+
     private async void NetworkClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         if (DataContext is MainViewModel vm) await vm.OpenNetworkAsync();

@@ -3,6 +3,7 @@
         x:DataType="vm:MainViewModel" Title="KNX TP1 Analyzer Studio" Width="1400" Height="850" MinWidth="950" MinHeight="600">
   <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" Margin="12" RowSpacing="8">
     <DockPanel Grid.Row="0" LastChildFill="True">
+      <Button DockPanel.Dock="Right" Content="RAW Corpus" Click="RawCorpusClicked" Margin="8,0,0,0" />
       <Button DockPanel.Dock="Right" Content="Open SD / Sessions Folder" Click="OpenClicked" Margin="8,0,0,0" />
       <Button DockPanel.Dock="Right" Content="Network" Click="NetworkClicked" Margin="8,0,0,0" />
       <TextBox DockPanel.Dock="Right" Width="220" Text="{Binding NetworkHost}" PlaceholderText="Analyzer hostname / IP" />
