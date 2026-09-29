@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.IO.Compression;
 using KNXAnalyzer.Core;
 using KNXAnalyzer.Desktop.ViewModels;
 
@@ -6,6 +7,38 @@ namespace KNXAnalyzer.Desktop.Tests;
 
 public class AnalogCaptureViewModelTests
 {
+    [Fact]
+    public void RealEvent8FieldCandidatePopulatesBoundTrafficCollections()
+    {
+        var archive = Path.Combine(AppContext.BaseDirectory, "Fixtures", "KNX-F35F14A4.zip");
+        var folder = Path.Combine(Path.GetTempPath(), "knxstudio-traffic-replay-" + Guid.NewGuid().ToString("N"));
+        try {
+            ZipFile.ExtractToDirectory(archive, folder);
+            var vm = new MainViewModel();
+            vm.OpenFolder(folder);
+            vm.AnalogEvents.CollectionChanged += (_, change) => {
+                if (change.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Replace)
+                    vm.SelectedAnalogEvent = null;
+            };
+            vm.SelectedAnalogEvent = vm.AnalogEvents.Single(item => item.EventId == 8);
+            Assert.Empty(vm.Participants);
+
+            vm.SelectedOfflineProfile = Tp1AnalogDecodeProfile.FieldCandidate;
+
+            Assert.Equal(54, vm.OfflineRecordResults.Count);
+            Assert.Equal((uint)8, vm.SelectedAnalogEvent?.EventId);
+            Assert.Equal(7, vm.ObservedTrafficCount);
+            Assert.NotEmpty(vm.Participants);
+            Assert.NotEmpty(vm.Groups);
+            Assert.NotEmpty(vm.Interactions);
+            Assert.Equal(vm.ParticipantCount, vm.Participants.Count);
+            Assert.Equal(vm.GroupCount, vm.Groups.Count);
+            Assert.Equal(vm.InteractionCount, vm.Interactions.Count);
+        } finally {
+            if (Directory.Exists(folder)) Directory.Delete(folder, true);
+        }
+    }
+
     [Fact]
     public void FiltersAndNavigatesTp1RecordsWithinTheVisibleList()
     {

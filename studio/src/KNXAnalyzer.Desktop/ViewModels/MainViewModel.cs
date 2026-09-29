@@ -13,8 +13,10 @@ namespace KNXAnalyzer.Desktop.ViewModels;
 
 public partial class MainViewModel : ViewModelBase
 {
+    private readonly Dictionary<(string SessionId, uint EventId), IReadOnlyList<TrafficObservation>> offlineTraffic = [];
     private NetworkImportService? networkImport;
     private int networkOperationBusy;
+    private bool refreshingAnalogEventItem;
     public ObservableCollection<Session> Sessions { get; } = [];
     public ObservableCollection<NetworkSessionInfo> NetworkSessions { get; } = [];
     public ObservableCollection<Tp1Candidate> VisibleCandidates { get; } = [];
@@ -103,6 +105,7 @@ public partial class MainViewModel : ViewModelBase
     public void OpenFolder(string path)
     {
         try {
+            offlineTraffic.Clear();
             Sessions.Clear();
             foreach (var session in SessionReader.OpenFolder(path)) Sessions.Add(session);
             FolderPath = path;
@@ -140,7 +143,7 @@ public partial class MainViewModel : ViewModelBase
         try {
             var progress = new Progress<NetworkImportProgress>(x => NetworkProgress = x.FromCache ? $"cache · {x.Stage}" : x.Total is long total ? $"{x.Stage} · {x.Downloaded}/{total}" : x.Stage);
             var session = await networkImport.ImportMetadataAsync(SelectedNetworkSession, progress);
-            Sessions.Clear(); Sessions.Add(session); RefreshTrafficAnalysis(); SelectedSession = session;
+            offlineTraffic.Clear(); Sessions.Clear(); Sessions.Add(session); RefreshTrafficAnalysis(); SelectedSession = session;
             NetworkProgress = "metadata validated"; Status = "Session imported. Event RAW will be fetched and CRC-checked on demand.";
         } catch (Exception e) { Status = $"Network import: {e.Message}"; NetworkProgress = "error"; }
         finally { Volatile.Write(ref networkOperationBusy, 0); }
@@ -148,7 +151,10 @@ public partial class MainViewModel : ViewModelBase
     private void RefreshTrafficAnalysis()
     {
         Participants.Clear(); Groups.Clear(); Interactions.Clear();
-        var analysis = TrafficAnalyzer.Analyze(Sessions);
+        var recorded = TrafficObservationSource.FromSessions(Sessions);
+        var reconstructed = offlineTraffic.Values.SelectMany(x => x)
+            .DistinctBy(x => x.StableId);
+        var analysis = TrafficAnalyzer.Analyze(recorded.Concat(reconstructed));
         foreach (var item in analysis.Participants)
             Participants.Add(new ParticipantDisplay(item, analysis.ObservedTelegramCount == 0 ? 0 : 100.0 * item.TelegramCount / analysis.ObservedTelegramCount));
         foreach (var item in analysis.Groups) Groups.Add(new GroupDisplay(item));
@@ -275,6 +281,7 @@ public partial class MainViewModel : ViewModelBase
     }
     partial void OnSelectedAnalogEventChanged(AnalogEvent? value)
     {
+        if (refreshingAnalogEventItem) return;
         SelectedCapture = null; AnalogAxis = "Time axis unavailable"; AnalogVariationNotice = "";
         OfflineCandidates.Clear(); OfflineRecordResults.Clear(); SelectedOfflineCandidate = null; SelectedTp1Decode = null; OfflineAnalysisSummary = "Analyse offline indisponible.";
         OfflineSampleCount = 0; OfflineDuration = OfflineBaseline = OfflineNoiseRms = OfflineActivity = "—";
@@ -318,7 +325,7 @@ public partial class MainViewModel : ViewModelBase
             selected.D44Maximum = raw.D44Maximum;
             selected.ThresholdExceedanceCount = raw.ThresholdExceedanceIndices.Length;
             var index = AnalogEvents.IndexOf(selected);
-            if (index >= 0) AnalogEvents[index] = selected;
+            if (index >= 0) RefreshAnalogEventItem(index, selected);
         }
         SelectedCapture = raw; ApplyOfflineAnalysis(raw);
         EventViewerSummary = $"Event {raw.EventId} · {raw.DurationMilliseconds:F3} ms · {raw.Samples.Length:N0} samples · {raw.SampleRateHz:N0} Hz · ADC {raw.Minimum}…{raw.Maximum} · D44 max {raw.D44Maximum} · threshold {raw.Threshold} · {raw.Integrity}";
@@ -347,7 +354,16 @@ public partial class MainViewModel : ViewModelBase
     {
         item.RawIntegrity = status;
         var index = AnalogEvents.IndexOf(item);
-        if (index >= 0) AnalogEvents[index] = item;
+        if (index >= 0) RefreshAnalogEventItem(index, item);
+    }
+    private void RefreshAnalogEventItem(int index, AnalogEvent item)
+    {
+        var preserveSelection = ReferenceEquals(SelectedAnalogEvent, item);
+        refreshingAnalogEventItem = true;
+        try {
+            AnalogEvents[index] = item;
+            if (preserveSelection && !ReferenceEquals(SelectedAnalogEvent, item)) SelectedAnalogEvent = item;
+        } finally { refreshingAnalogEventItem = false; }
     }
     partial void OnSelectedOfflineProfileChanged(Tp1AnalogDecodeProfile value)
     {
@@ -357,6 +373,11 @@ public partial class MainViewModel : ViewModelBase
     private void ApplyOfflineAnalysis(RawCapture raw)
     {
         var offline = OfflineRawAnalyzer.Analyze(raw, SelectedOfflineProfile);
+        if (SelectedSession is { } session) {
+            offlineTraffic[(session.Id, raw.EventId)] =
+                TrafficObservationSource.FromOfflineEvent(session.Id, raw, offline.Tp1Candidates);
+            RefreshTrafficAnalysis();
+        }
         SelectedTp1Decode = offline.DecodeResult;
         OfflineRecordResults.Clear();
         foreach (var candidate in offline.Tp1Candidates) OfflineRecordResults.Add(candidate);

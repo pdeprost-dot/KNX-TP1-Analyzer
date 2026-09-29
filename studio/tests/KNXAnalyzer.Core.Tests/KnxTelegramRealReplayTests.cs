@@ -55,6 +55,18 @@ public sealed class KnxTelegramRealReplayTests(ITestOutputHelper output)
                 Assert.True(telegram.ChecksumValid);
             });
 
+            var event8Capture = EventRawV2Reader.ReadCapture(folder, 8);
+            var event8Offline = OfflineRawAnalyzer.Analyze(event8Capture, Tp1AnalogDecodeProfile.FieldCandidate);
+            var event8Traffic = TrafficObservationSource.FromOfflineEvent(session.Id, event8Capture, event8Offline.Tp1Candidates);
+            Assert.Equal(7, event8Traffic.Count);
+            Assert.DoesNotContain(event8Traffic, item => item.Telegram.RawBytes.Length == 1);
+            var traffic = TrafficAnalyzer.Analyze(event8Traffic);
+            Assert.NotEmpty(traffic.Participants);
+            Assert.NotEmpty(traffic.Groups);
+            Assert.NotEmpty(traffic.Interactions);
+            Assert.Contains(traffic.Participants, item => item.Address == "15.15.22");
+            Assert.Contains(traffic.Groups, item => item.Address == "0/0/1");
+
             var parsed = records.Select(KnxTelegramDecoder.Parse).ToArray();
             var telegrams = parsed.Where(x => x.Telegram is not null).Select(x => x.Telegram!).ToArray();
             output.WriteLine($"parse-status: {string.Join(", ", parsed.GroupBy(x => x.Status).Select(x => $"{x.Key}={x.Count()}"))}");
